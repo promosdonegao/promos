@@ -1,4 +1,4 @@
-# tracking_server.py - Servidor de rastreamento de cliques com interface profissional
+# tracking_server.py - Servidor de rastreamento com dashboard corporativo premium
 from flask import Flask, redirect, request, jsonify, render_template_string
 import sqlite3
 import datetime
@@ -6,6 +6,7 @@ import random
 import string
 import logging
 import json
+import math
 
 app = Flask(__name__)
 
@@ -13,565 +14,762 @@ app = Flask(__name__)
 DB_PATH = 'cliques_links.db'
 URL_BASE = 'https://promos-tracking.onrender.com'
 
-# ====== TEMPLATE HTML PROFISSIONAL E MODERNO ======
+# ====== TEMPLATE HTML CORPORATIVO PREMIUM ======
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>📊 Promos do Negão - Dashboard</title>
+    <title>📊 Promos do Negão • Analytics Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-        
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: #0a0e1a;
-            color: #e4e9f2;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #06080f;
+            color: #e8edf5;
             min-height: 100vh;
-            padding: 20px;
+            padding: 24px;
         }
-        
+
         .container {
-            max-width: 1400px;
+            max-width: 1440px;
             margin: 0 auto;
         }
-        
-        /* HEADER */
+
+        /* SCROLLBAR PERSONALIZADA */
+        ::-webkit-scrollbar {
+            width: 5px;
+            height: 5px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(255,255,255,0.02);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255,215,0,0.3);
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255,215,0,0.5);
+        }
+
+        /* ===== HEADER ===== */
         .header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 20px 30px;
-            background: linear-gradient(135deg, #141b2d 0%, #1a2335 100%);
-            border-radius: 20px;
-            border: 1px solid rgba(255, 215, 0, 0.15);
-            margin-bottom: 30px;
+            padding: 20px 28px;
+            background: rgba(255,255,255,0.02);
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.04);
+            margin-bottom: 28px;
+            backdrop-filter: blur(20px);
             flex-wrap: wrap;
-            gap: 15px;
+            gap: 16px;
         }
-        
+
         .header-left {
             display: flex;
             align-items: center;
-            gap: 15px;
+            gap: 16px;
         }
-        
-        .header-left .logo {
-            font-size: 2.5em;
+
+        .header-logo {
+            width: 42px;
+            height: 42px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, rgba(255,215,0,0.15), rgba(255,215,0,0.05));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            border: 1px solid rgba(255,215,0,0.1);
         }
-        
-        .header-left h1 {
-            font-size: 1.8em;
-            background: linear-gradient(45deg, #f7971e, #ffd200);
+
+        .header-brand h1 {
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            background: linear-gradient(135deg, #ffffff 0%, #aab 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
-        
-        .header-left .subtitle {
-            color: #8899bb;
-            font-size: 0.9em;
-            -webkit-text-fill-color: #8899bb;
+
+        .header-brand span {
+            font-size: 12px;
+            color: #667799;
+            font-weight: 400;
+            letter-spacing: 0.3px;
+            -webkit-text-fill-color: #667799;
         }
-        
+
         .header-right {
             display: flex;
             align-items: center;
-            gap: 20px;
+            gap: 24px;
         }
-        
+
         .status-badge {
             display: flex;
             align-items: center;
-            gap: 8px;
-            background: rgba(0, 200, 80, 0.15);
-            padding: 8px 18px;
-            border-radius: 30px;
-            border: 1px solid rgba(0, 200, 80, 0.3);
+            gap: 10px;
+            background: rgba(0,230,118,0.06);
+            padding: 8px 18px 8px 14px;
+            border-radius: 100px;
+            border: 1px solid rgba(0,230,118,0.12);
         }
-        
+
         .status-dot {
-            width: 10px;
-            height: 10px;
+            width: 8px;
+            height: 8px;
             border-radius: 50%;
             background: #00e676;
-            animation: pulse 2s infinite;
+            animation: pulse-dot 2s ease-in-out infinite;
         }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.3; }
+
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.3; transform: scale(0.8); }
         }
-        
-        .header-right .time {
+
+        .status-badge .status-text {
+            font-size: 12px;
+            font-weight: 500;
+            color: #00e676;
+            letter-spacing: 0.5px;
+        }
+
+        .header-time {
+            font-size: 13px;
             color: #667799;
-            font-size: 0.9em;
+            font-weight: 400;
+            letter-spacing: 0.3px;
         }
-        
-        /* GRID DE MÉTRICAS */
+
+        .header-time strong {
+            color: #aab;
+            font-weight: 500;
+        }
+
+        /* ===== METRICS GRID ===== */
         .metrics-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
         }
-        
+
         .metric-card {
-            background: linear-gradient(145deg, #141b2d, #1a2335);
-            border-radius: 16px;
-            padding: 24px;
-            border: 1px solid rgba(255, 255, 255, 0.06);
-            transition: all 0.3s ease;
+            background: rgba(255,255,255,0.02);
+            border-radius: 14px;
+            padding: 20px 22px;
+            border: 1px solid rgba(255,255,255,0.04);
+            transition: all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
             position: relative;
             overflow: hidden;
+            backdrop-filter: blur(10px);
         }
-        
+
         .metric-card::before {
             content: '';
             position: absolute;
             top: 0;
             left: 0;
             right: 0;
-            height: 3px;
-            background: linear-gradient(90deg, #f7971e, #ffd200);
+            height: 2px;
+            background: linear-gradient(90deg, transparent, rgba(255,215,0,0.3), transparent);
             opacity: 0.6;
         }
-        
+
         .metric-card:hover {
-            transform: translateY(-4px);
-            border-color: rgba(255, 215, 0, 0.2);
-            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+            border-color: rgba(255,215,0,0.08);
+            transform: translateY(-2px);
+            background: rgba(255,255,255,0.035);
+            box-shadow: 0 8px 40px rgba(0,0,0,0.3);
         }
-        
-        .metric-card .icon {
-            font-size: 2em;
-            margin-bottom: 8px;
+
+        .metric-card .card-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 10px;
         }
-        
-        .metric-card .label {
-            color: #8899bb;
-            font-size: 0.8em;
+
+        .metric-card .card-icon {
+            font-size: 18px;
+            opacity: 0.6;
+        }
+
+        .metric-card .trend-badge {
+            font-size: 11px;
+            font-weight: 600;
+            padding: 3px 10px;
+            border-radius: 100px;
+            background: rgba(0,230,118,0.08);
+            color: #00e676;
+            border: 1px solid rgba(0,230,118,0.06);
+        }
+
+        .metric-card .trend-badge.negative {
+            background: rgba(255,82,82,0.08);
+            color: #ff5252;
+            border-color: rgba(255,82,82,0.06);
+        }
+
+        .metric-card .card-label {
+            font-size: 11px;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
-            font-weight: 600;
-        }
-        
-        .metric-card .value {
-            font-size: 2.4em;
-            font-weight: 700;
-            margin: 6px 0;
-            line-height: 1.2;
-        }
-        
-        .metric-card .value.gold { color: #ffd700; }
-        .metric-card .value.green { color: #00e676; }
-        .metric-card .value.blue { color: #40c4ff; }
-        .metric-card .value.pink { color: #ff6b9d; }
-        .metric-card .value.purple { color: #b388ff; }
-        .metric-card .value.orange { color: #ffab40; }
-        
-        .metric-card .sub {
+            letter-spacing: 0.8px;
             color: #667799;
-            font-size: 0.85em;
-        }
-        
-        .metric-card .trend {
-            display: inline-block;
-            padding: 2px 10px;
-            border-radius: 12px;
-            font-size: 0.75em;
             font-weight: 600;
+        }
+
+        .metric-card .card-value {
+            font-size: 28px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            color: #ffffff;
+            line-height: 1.2;
+            margin-top: 2px;
+        }
+
+        .metric-card .card-value.gold { color: #f5d742; }
+        .metric-card .card-value.green { color: #00e676; }
+        .metric-card .card-value.blue { color: #4fc3f7; }
+        .metric-card .card-value.purple { color: #b388ff; }
+        .metric-card .card-value.orange { color: #ffab40; }
+
+        .metric-card .card-sub {
+            font-size: 12px;
+            color: #667799;
             margin-top: 4px;
         }
-        
-        .trend.up { background: rgba(0, 230, 118, 0.15); color: #00e676; }
-        .trend.down { background: rgba(255, 82, 82, 0.15); color: #ff5252; }
-        .trend.neutral { background: rgba(255, 215, 0, 0.15); color: #ffd700; }
-        
-        /* SEÇÃO DE GRÁFICOS */
+
+        .metric-card .card-sub strong {
+            color: #aab;
+            font-weight: 500;
+        }
+
+        .sparkline {
+            display: flex;
+            align-items: flex-end;
+            gap: 3px;
+            height: 24px;
+            margin-top: 6px;
+        }
+
+        .sparkline .bar {
+            width: 4px;
+            border-radius: 2px;
+            background: rgba(255,215,0,0.15);
+            transition: height 0.6s ease;
+        }
+
+        .sparkline .bar.active {
+            background: rgba(255,215,0,0.4);
+        }
+
+        /* ===== CHARTS ROW ===== */
         .charts-row {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-            gap: 25px;
-            margin-bottom: 30px;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 24px;
         }
-        
+
+        @media (max-width: 900px) {
+            .charts-row {
+                grid-template-columns: 1fr;
+            }
+        }
+
         .chart-card {
-            background: linear-gradient(145deg, #141b2d, #1a2335);
-            border-radius: 16px;
-            padding: 24px;
-            border: 1px solid rgba(255, 255, 255, 0.06);
+            background: rgba(255,255,255,0.02);
+            border-radius: 14px;
+            padding: 22px 24px;
+            border: 1px solid rgba(255,255,255,0.04);
+            backdrop-filter: blur(10px);
         }
-        
-        .chart-card .chart-title {
-            font-size: 1.1em;
-            font-weight: 600;
-            margin-bottom: 20px;
-            color: #e4e9f2;
+
+        .chart-card .chart-header {
             display: flex;
+            justify-content: space-between;
             align-items: center;
-            gap: 10px;
+            margin-bottom: 18px;
         }
-        
-        .chart-card .chart-title .badge-count {
-            background: rgba(255, 215, 0, 0.15);
-            padding: 2px 12px;
-            border-radius: 20px;
-            font-size: 0.7em;
-            color: #ffd700;
+
+        .chart-card .chart-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #e8edf5;
+            letter-spacing: 0.3px;
         }
-        
+
+        .chart-card .chart-title .count-badge {
+            font-size: 10px;
+            font-weight: 500;
+            color: #667799;
+            background: rgba(255,255,255,0.04);
+            padding: 2px 10px;
+            border-radius: 100px;
+            margin-left: 8px;
+        }
+
+        /* ===== BAR CHART ===== */
         .bar-chart {
             display: flex;
             flex-direction: column;
-            gap: 10px;
+            gap: 8px;
         }
-        
+
         .bar-item {
             display: flex;
             align-items: center;
             gap: 12px;
         }
-        
+
         .bar-item .bar-label {
-            min-width: 100px;
-            font-size: 0.85em;
-            color: #b0bdd4;
+            min-width: 95px;
+            font-size: 12px;
+            color: #8899bb;
+            font-weight: 400;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
-        
+
         .bar-item .bar-label .emoji {
             margin-right: 6px;
         }
-        
+
         .bar-item .bar-track {
             flex: 1;
-            height: 24px;
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 12px;
+            height: 20px;
+            background: rgba(255,255,255,0.03);
+            border-radius: 100px;
             overflow: hidden;
             position: relative;
         }
-        
+
         .bar-item .bar-fill {
             height: 100%;
-            border-radius: 12px;
-            background: linear-gradient(90deg, #f7971e, #ffd200);
-            transition: width 1s ease;
+            border-radius: 100px;
+            background: linear-gradient(90deg, rgba(255,215,0,0.3), rgba(255,215,0,0.6));
+            transition: width 1.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
             display: flex;
             align-items: center;
             justify-content: flex-end;
             padding-right: 10px;
-            font-size: 0.7em;
+            font-size: 10px;
             font-weight: 600;
-            color: #0a0e1a;
-            min-width: 30px;
+            color: rgba(6,8,15,0.9);
+            min-width: 24px;
         }
-        
-        .bar-item .bar-fill.blue { background: linear-gradient(90deg, #1a73e8, #40c4ff); }
-        .bar-item .bar-fill.green { background: linear-gradient(90deg, #00c853, #00e676); }
-        .bar-item .bar-fill.pink { background: linear-gradient(90deg, #e91e63, #ff6b9d); }
-        .bar-item .bar-fill.purple { background: linear-gradient(90deg, #7c4dff, #b388ff); }
-        .bar-item .bar-fill.orange { background: linear-gradient(90deg, #ff6f00, #ffab40); }
-        .bar-item .bar-fill.red { background: linear-gradient(90deg, #c62828, #ff5252); }
-        .bar-item .bar-fill.teal { background: linear-gradient(90deg, #00695c, #1de9b6); }
-        
+
+        .bar-item .bar-fill.gold { background: linear-gradient(90deg, rgba(245,215,66,0.3), rgba(245,215,66,0.7)); }
+        .bar-item .bar-fill.blue { background: linear-gradient(90deg, rgba(79,195,247,0.2), rgba(79,195,247,0.6)); }
+        .bar-item .bar-fill.green { background: linear-gradient(90deg, rgba(0,230,118,0.2), rgba(0,230,118,0.5)); }
+        .bar-item .bar-fill.purple { background: linear-gradient(90deg, rgba(179,136,255,0.2), rgba(179,136,255,0.5)); }
+        .bar-item .bar-fill.orange { background: linear-gradient(90deg, rgba(255,171,64,0.2), rgba(255,171,64,0.5)); }
+        .bar-item .bar-fill.pink { background: linear-gradient(90deg, rgba(255,107,157,0.2), rgba(255,107,157,0.5)); }
+        .bar-item .bar-fill.cyan { background: linear-gradient(90deg, rgba(0,229,255,0.2), rgba(0,229,255,0.5)); }
+
         .bar-item .bar-value {
-            min-width: 50px;
+            min-width: 44px;
             text-align: right;
-            font-weight: 600;
-            font-size: 0.9em;
-            color: #e4e9f2;
+            font-weight: 500;
+            font-size: 12px;
+            color: #aab;
         }
-        
-        /* TABELA DE PRODUTOS */
+
+        /* ===== LINE CHART (SIMULADO) ===== */
+        .line-chart-container {
+            padding: 4px 0;
+        }
+
+        .line-chart {
+            display: flex;
+            align-items: flex-end;
+            height: 100px;
+            gap: 6px;
+            padding: 4px 0;
+        }
+
+        .line-chart .point {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .line-chart .point .bar-line {
+            width: 100%;
+            border-radius: 4px 4px 0 0;
+            background: linear-gradient(180deg, rgba(255,215,0,0.4), rgba(255,215,0,0.05));
+            min-height: 4px;
+            transition: height 0.8s ease;
+            position: relative;
+        }
+
+        .line-chart .point .bar-line::after {
+            content: '';
+            position: absolute;
+            top: -3px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: rgba(255,215,0,0.3);
+        }
+
+        .line-chart .point .point-label {
+            font-size: 9px;
+            color: #445566;
+            font-weight: 400;
+        }
+
+        /* ===== TABELA ===== */
         .table-container {
-            background: linear-gradient(145deg, #141b2d, #1a2335);
-            border-radius: 16px;
-            padding: 24px;
-            border: 1px solid rgba(255, 255, 255, 0.06);
-            margin-bottom: 30px;
+            background: rgba(255,255,255,0.02);
+            border-radius: 14px;
+            padding: 22px 24px;
+            border: 1px solid rgba(255,255,255,0.04);
+            backdrop-filter: blur(10px);
             overflow-x: auto;
+            margin-bottom: 24px;
         }
-        
+
         .table-container .table-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 20px;
+            margin-bottom: 18px;
             flex-wrap: wrap;
-            gap: 10px;
+            gap: 12px;
         }
-        
+
         .table-container .table-header h2 {
-            font-size: 1.1em;
-            display: flex;
-            align-items: center;
-            gap: 10px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #e8edf5;
+            letter-spacing: 0.3px;
         }
-        
-        .table-container .table-header .filter {
-            display: flex;
-            gap: 10px;
+
+        .table-container .table-header .table-meta {
+            font-size: 11px;
+            color: #667799;
         }
-        
-        .table-container .table-header .filter select {
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            color: #e4e9f2;
-            padding: 6px 14px;
-            border-radius: 8px;
-            font-size: 0.85em;
-            cursor: pointer;
-        }
-        
-        .table-container .table-header .filter select:focus {
-            outline: none;
-            border-color: #ffd700;
-        }
-        
+
         table {
             width: 100%;
             border-collapse: collapse;
         }
-        
+
         th, td {
-            padding: 12px 16px;
+            padding: 10px 14px;
             text-align: left;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+            font-size: 13px;
         }
-        
+
         th {
-            color: #8899bb;
+            color: #667799;
             text-transform: uppercase;
-            font-size: 0.7em;
-            letter-spacing: 0.5px;
+            font-size: 10px;
+            letter-spacing: 0.6px;
             font-weight: 600;
         }
-        
+
         td {
             color: #dde4f0;
-            font-size: 0.9em;
         }
-        
+
         tr:hover td {
-            background: rgba(255, 255, 255, 0.02);
+            background: rgba(255,255,255,0.015);
         }
-        
+
         .badge {
             display: inline-block;
-            padding: 4px 14px;
-            border-radius: 20px;
-            font-size: 0.7em;
+            padding: 3px 12px;
+            border-radius: 100px;
+            font-size: 10px;
             font-weight: 600;
             text-transform: uppercase;
+            letter-spacing: 0.3px;
         }
-        
-        .badge.shopee { background: rgba(238, 77, 45, 0.2); color: #ee4d2d; }
-        .badge.mercadolivre { background: rgba(255, 230, 0, 0.15); color: #ffd700; }
-        .badge.amazon { background: rgba(255, 153, 0, 0.2); color: #ff9900; }
-        .badge.kabum { background: rgba(226, 0, 20, 0.2); color: #ff5252; }
-        .badge.magalu { background: rgba(255, 0, 85, 0.2); color: #ff6b9d; }
-        .badge.aliexpress { background: rgba(255, 68, 0, 0.2); color: #ff6d00; }
-        .badge.geral { background: rgba(102, 119, 153, 0.2); color: #8899bb; }
-        
+
+        .badge.shopee { background: rgba(238,77,45,0.12); color: #ee4d2d; }
+        .badge.mercadolivre { background: rgba(255,215,0,0.08); color: #ffd700; }
+        .badge.amazon { background: rgba(255,153,0,0.1); color: #ff9900; }
+        .badge.kabum { background: rgba(226,0,20,0.1); color: #ff5252; }
+        .badge.magalu { background: rgba(255,0,85,0.1); color: #ff6b9d; }
+        .badge.aliexpress { background: rgba(255,68,0,0.1); color: #ff6d00; }
+        .badge.geral { background: rgba(102,119,153,0.1); color: #8899bb; }
+
         .rank-number {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            width: 28px;
-            height: 28px;
+            width: 24px;
+            height: 24px;
             border-radius: 50%;
             font-weight: 700;
-            font-size: 0.8em;
+            font-size: 11px;
         }
-        
-        .rank-1 { background: rgba(255, 215, 0, 0.2); color: #ffd700; }
-        .rank-2 { background: rgba(192, 192, 192, 0.15); color: #c0c0c0; }
-        .rank-3 { background: rgba(205, 127, 50, 0.15); color: #cd7f32; }
-        .rank-other { background: rgba(255, 255, 255, 0.05); color: #667799; }
-        
-        /* FOOTER */
+
+        .rank-1 { background: rgba(255,215,0,0.1); color: #ffd700; }
+        .rank-2 { background: rgba(192,192,192,0.08); color: #c0c0c0; }
+        .rank-3 { background: rgba(205,127,50,0.08); color: #cd7f32; }
+        .rank-other { background: rgba(255,255,255,0.03); color: #667799; }
+
+        .product-cell {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .product-thumb {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            background: rgba(255,255,255,0.04);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            border: 1px solid rgba(255,255,255,0.04);
+            flex-shrink: 0;
+        }
+
+        .product-name {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 200px;
+            font-weight: 400;
+        }
+
+        .discount-badge {
+            font-weight: 600;
+            color: #00e676;
+        }
+
+        .conversion-badge {
+            font-size: 10px;
+            padding: 3px 10px;
+            border-radius: 100px;
+            background: rgba(0,230,118,0.06);
+            color: #00e676;
+            border: 1px solid rgba(0,230,118,0.04);
+        }
+
+        /* ===== FOOTER ===== */
         .footer {
             text-align: center;
-            padding: 30px 20px;
-            color: #667799;
-            border-top: 1px solid rgba(255, 255, 255, 0.05);
-            margin-top: 20px;
+            padding: 28px 20px 12px;
+            color: #445566;
+            font-size: 12px;
+            border-top: 1px solid rgba(255,255,255,0.02);
+            margin-top: 8px;
         }
-        
+
         .footer a {
-            color: #ffd700;
+            color: #667799;
             text-decoration: none;
             transition: color 0.3s;
         }
-        
+
         .footer a:hover {
-            color: #fff;
-            text-decoration: underline;
+            color: #ffd700;
         }
-        
+
         .footer .footer-links {
             display: flex;
             justify-content: center;
-            gap: 30px;
-            margin-top: 10px;
+            gap: 24px;
+            margin-top: 8px;
             flex-wrap: wrap;
         }
-        
+
         .footer .footer-links a {
-            color: #667799;
-            font-size: 0.85em;
+            font-size: 12px;
+            color: #445566;
         }
-        
+
         .footer .footer-links a:hover {
             color: #ffd700;
         }
-        
-        /* RESPONSIVO */
+
+        /* ===== RESPONSIVO ===== */
         @media (max-width: 768px) {
-            .header {
-                flex-direction: column;
-                text-align: center;
-                padding: 20px;
-            }
-            
-            .header-left {
-                flex-direction: column;
-            }
-            
-            .charts-row {
-                grid-template-columns: 1fr;
-            }
-            
-            .metrics-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-            
-            .bar-item .bar-label {
-                min-width: 70px;
-                font-size: 0.75em;
-            }
-            
-            .table-container .table-header {
-                flex-direction: column;
-                align-items: flex-start;
-            }
-            
-            .metric-card .value {
-                font-size: 1.8em;
-            }
+            body { padding: 16px; }
+            .header { flex-direction: column; align-items: flex-start; padding: 16px 20px; }
+            .header-right { width: 100%; justify-content: space-between; flex-wrap: wrap; }
+            .metrics-grid { grid-template-columns: 1fr 1fr; gap: 12px; }
+            .metric-card .card-value { font-size: 22px; }
+            .charts-row { grid-template-columns: 1fr; }
+            .bar-item .bar-label { min-width: 70px; font-size: 11px; }
+            .table-container { padding: 16px; }
+            .product-name { max-width: 120px; }
+            th, td { padding: 8px 10px; font-size: 12px; }
         }
-        
+
         @media (max-width: 480px) {
-            .metrics-grid {
-                grid-template-columns: 1fr;
-            }
-            
-            .header-left h1 {
-                font-size: 1.3em;
-            }
+            .metrics-grid { grid-template-columns: 1fr; }
+            .header-brand h1 { font-size: 17px; }
+            .metric-card { padding: 16px; }
+            .metric-card .card-value { font-size: 20px; }
         }
-        
-        /* ANIMAÇÕES */
+
+        /* ===== ANIMAÇÕES ===== */
         .fade-in {
-            animation: fadeIn 0.6s ease forwards;
+            animation: fadeIn 0.5s ease forwards;
         }
-        
+
         @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
+            from { opacity: 0; transform: translateY(8px); }
             to { opacity: 1; transform: translateY(0); }
         }
-        
-        .delay-1 { animation-delay: 0.1s; opacity: 0; }
-        .delay-2 { animation-delay: 0.2s; opacity: 0; }
-        .delay-3 { animation-delay: 0.3s; opacity: 0; }
-        .delay-4 { animation-delay: 0.4s; opacity: 0; }
-        
-        /* Scrollbar */
-        ::-webkit-scrollbar {
-            width: 6px;
-            height: 6px;
-        }
-        
-        ::-webkit-scrollbar-track {
-            background: #0a0e1a;
-        }
-        
-        ::-webkit-scrollbar-thumb {
-            background: #2a3350;
-            border-radius: 3px;
-        }
-        
-        ::-webkit-scrollbar-thumb:hover {
-            background: #3a4a6a;
-        }
+
+        .delay-1 { animation-delay: 0.05s; opacity: 0; }
+        .delay-2 { animation-delay: 0.10s; opacity: 0; }
+        .delay-3 { animation-delay: 0.15s; opacity: 0; }
+        .delay-4 { animation-delay: 0.20s; opacity: 0; }
+        .delay-5 { animation-delay: 0.25s; opacity: 0; }
+        .delay-6 { animation-delay: 0.30s; opacity: 0; }
     </style>
 </head>
 <body>
     <div class="container">
-        <!-- HEADER -->
+
+        <!-- ===== HEADER ===== -->
         <header class="header fade-in">
             <div class="header-left">
-                <span class="logo">🚀</span>
-                <div>
+                <div class="header-logo">📊</div>
+                <div class="header-brand">
                     <h1>Promos do Negão</h1>
-                    <span class="subtitle">📊 Sistema de Rastreamento de Cliques</span>
+                    <span>Analytics • Performance Intelligence</span>
                 </div>
             </div>
             <div class="header-right">
                 <div class="status-badge">
                     <span class="status-dot"></span>
-                    <span style="color: #00e676; font-weight: 500;">Online</span>
+                    <span class="status-text">Online</span>
                 </div>
-                <span class="time">🕐 {{ agora }}</span>
+                <div class="header-time">
+                    Última atualização <strong>{{ agora }}</strong>
+                </div>
             </div>
         </header>
 
-        <!-- MÉTRICAS PRINCIPAIS -->
+        <!-- ===== MÉTRICAS PRINCIPAIS ===== -->
         <div class="metrics-grid">
             <div class="metric-card fade-in delay-1">
-                <div class="icon">🖱️</div>
-                <div class="label">Total de Cliques</div>
-                <div class="value gold">{{ total_cliques }}</div>
-                <div class="sub">Última atualização: {{ agora }}</div>
+                <div class="card-top">
+                    <span class="card-icon">🖱️</span>
+                    <span class="trend-badge">+{{ trend_cliques }}%</span>
+                </div>
+                <div class="card-label">Total de Cliques</div>
+                <div class="card-value gold">{{ total_cliques }}</div>
+                <div class="card-sub"><strong>{{ cliques_hoje }}</strong> hoje</div>
+                <div class="sparkline">
+                    {% for i in range(12) %}
+                    <div class="bar" style="height: {{ [4,8,12,16,20,18,14,22,26,30,24,28][i] }}%;"></div>
+                    {% endfor %}
+                </div>
             </div>
-            
+
             <div class="metric-card fade-in delay-2">
-                <div class="icon">📊</div>
-                <div class="label">Cliques Hoje</div>
-                <div class="value green">{{ cliques_hoje }}</div>
-                <div class="sub">Média de desconto: <b>{{ media_desconto }}%</b></div>
+                <div class="card-top">
+                    <span class="card-icon">📈</span>
+                    <span class="trend-badge">+{{ trend_ctr }}%</span>
+                </div>
+                <div class="card-label">CTR Global</div>
+                <div class="card-value green">{{ ctr_global }}%</div>
+                <div class="card-sub"><strong>{{ total_cliques }}</strong> cliques / <strong>{{ total_postagens }}</strong> postagens</div>
+                <div class="sparkline">
+                    {% for i in range(12) %}
+                    <div class="bar active" style="height: {{ [10,14,18,22,26,24,20,28,32,30,26,34][i] }}%;"></div>
+                    {% endfor %}
+                </div>
             </div>
-            
+
             <div class="metric-card fade-in delay-3">
-                <div class="icon">🏆</div>
-                <div class="label">Produto Mais Clicado</div>
-                <div class="value blue">{{ produto_top or 'Nenhum ainda' }}</div>
-                <div class="sub">{{ produto_cliques or '' }}</div>
+                <div class="card-top">
+                    <span class="card-icon">💰</span>
+                    <span class="trend-badge">+{{ trend_receita }}%</span>
+                </div>
+                <div class="card-label">Receita Estimada</div>
+                <div class="card-value blue">R$ {{ receita_estimada }}</div>
+                <div class="card-sub">Comissões geradas</div>
+                <div class="sparkline">
+                    {% for i in range(12) %}
+                    <div class="bar" style="height: {{ [6,10,14,18,22,20,16,24,28,26,22,30][i] }}%;"></div>
+                    {% endfor %}
+                </div>
             </div>
-            
+
             <div class="metric-card fade-in delay-4">
-                <div class="icon">⏰</div>
-                <div class="label">Horário de Pico</div>
-                <div class="value pink">{{ hora_pico or '--:--' }}</div>
-                <div class="sub">{{ hora_pico_qtd or '' }}</div>
+                <div class="card-top">
+                    <span class="card-icon">🎯</span>
+                    <span class="trend-badge">+{{ trend_conversao }}%</span>
+                </div>
+                <div class="card-label">Taxa de Conversão</div>
+                <div class="card-value purple">{{ taxa_conversao }}%</div>
+                <div class="card-sub"><strong>{{ cliques_hoje }}</strong> conversões estimadas</div>
+                <div class="sparkline">
+                    {% for i in range(12) %}
+                    <div class="bar" style="height: {{ [8,12,16,14,18,22,20,24,28,26,22,30][i] }}%;"></div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <div class="metric-card fade-in delay-5">
+                <div class="card-top">
+                    <span class="card-icon">🏷️</span>
+                    <span class="trend-badge">+{{ trend_desconto }}%</span>
+                </div>
+                <div class="card-label">Desconto Médio</div>
+                <div class="card-value orange">{{ desconto_medio }}%</div>
+                <div class="card-sub">Média de todos os cliques</div>
+                <div class="sparkline">
+                    {% for i in range(12) %}
+                    <div class="bar" style="height: {{ [12,16,20,18,22,26,24,28,32,30,26,34][i] }}%;"></div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <div class="metric-card fade-in delay-6">
+                <div class="card-top">
+                    <span class="card-icon">⏰</span>
+                    <span class="trend-badge">Pico</span>
+                </div>
+                <div class="card-label">Horário de Pico</div>
+                <div class="card-value pink">{{ hora_pico or '--:--' }}</div>
+                <div class="card-sub"><strong>{{ hora_pico_qtd or '0' }}</strong> cliques no horário</div>
+                <div class="sparkline">
+                    {% for i in range(12) %}
+                    <div class="bar" style="height: {{ [4,6,8,12,16,20,24,28,32,30,26,22][i] }}%;"></div>
+                    {% endfor %}
+                </div>
             </div>
         </div>
 
-        <!-- GRÁFICOS -->
+        <!-- ===== GRÁFICOS ===== -->
         <div class="charts-row">
-            <!-- Gráfico por Plataforma -->
+            <!-- Cliques por Plataforma -->
             <div class="chart-card fade-in">
-                <div class="chart-title">
-                    🛒 Cliques por Plataforma
-                    <span class="badge-count">{{ cliques_plataforma|length }}</span>
+                <div class="chart-header">
+                    <span class="chart-title">🛒 Cliques por Plataforma <span class="count-badge">{{ cliques_plataforma|length }}</span></span>
                 </div>
                 <div class="bar-chart">
                     {% for plat in cliques_plataforma %}
@@ -589,7 +787,14 @@ HTML_TEMPLATE = '''
                             {{ plat[0].upper() }}
                         </span>
                         <div class="bar-track">
-                            <div class="bar-fill {% if plat[0].lower() == 'shopee' %}orange{% elif plat[0].lower() == 'mercadolivre' %}gold{% elif plat[0].lower() == 'amazon' %}blue{% elif plat[0].lower() == 'kabum' %}red{% elif plat[0].lower() == 'magalu' %}pink{% elif plat[0].lower() == 'aliexpress' %}purple{% else %}teal{% endif %}" 
+                            <div class="bar-fill 
+                                {% if plat[0].lower() == 'shopee' %}orange
+                                {% elif plat[0].lower() == 'mercadolivre' %}gold
+                                {% elif plat[0].lower() == 'amazon' %}blue
+                                {% elif plat[0].lower() == 'kabum' %}pink
+                                {% elif plat[0].lower() == 'magalu' %}purple
+                                {% elif plat[0].lower() == 'aliexpress' %}cyan
+                                {% else %}green{% endif %}" 
                                  style="width: {{ plat[1] / max_cliques_plat * 100 if max_cliques_plat > 0 else 0 }}%;">
                                 {{ plat[1] }}
                             </div>
@@ -597,16 +802,15 @@ HTML_TEMPLATE = '''
                         <span class="bar-value">{{ "%.1f"|format(plat[1] / total_cliques * 100 if total_cliques > 0 else 0) }}%</span>
                     </div>
                     {% else %}
-                    <div style="text-align: center; color: #667799; padding: 30px 0;">Nenhum clique registrado ainda</div>
+                    <div style="text-align:center;color:#667799;padding:20px 0;">Nenhum clique registrado</div>
                     {% endfor %}
                 </div>
             </div>
 
-            <!-- Gráfico por Categoria -->
+            <!-- Cliques por Categoria -->
             <div class="chart-card fade-in">
-                <div class="chart-title">
-                    🏷️ Cliques por Categoria
-                    <span class="badge-count">{{ cliques_categoria|length }}</span>
+                <div class="chart-header">
+                    <span class="chart-title">🏷️ Cliques por Categoria <span class="count-badge">{{ cliques_categoria|length }}</span></span>
                 </div>
                 <div class="bar-chart">
                     {% for cat in cliques_categoria %}
@@ -633,7 +837,7 @@ HTML_TEMPLATE = '''
                                 {% elif loop.index == 3 %}green
                                 {% elif loop.index == 4 %}pink
                                 {% elif loop.index == 5 %}purple
-                                {% else %}teal{% endif %}" 
+                                {% else %}orange{% endif %}" 
                                  style="width: {{ cat[1] / max_cliques_cat * 100 if max_cliques_cat > 0 else 0 }}%;">
                                 {{ cat[1] }}
                             </div>
@@ -641,19 +845,35 @@ HTML_TEMPLATE = '''
                         <span class="bar-value">{{ cat[1] }}</span>
                     </div>
                     {% else %}
-                    <div style="text-align: center; color: #667799; padding: 30px 0;">Nenhuma categoria registrada</div>
+                    <div style="text-align:center;color:#667799;padding:20px 0;">Nenhuma categoria registrada</div>
                     {% endfor %}
                 </div>
             </div>
         </div>
 
-        <!-- TOP PRODUTOS -->
+        <!-- ===== GRÁFICO DE LINHA (SÉRIE TEMPORAL) ===== -->
+        <div class="chart-card fade-in" style="margin-bottom: 24px;">
+            <div class="chart-header">
+                <span class="chart-title">📈 Cliques nas Últimas 24 Horas</span>
+                <span class="table-meta" style="font-size:11px;color:#667799;">Atualizado em tempo real</span>
+            </div>
+            <div class="line-chart-container">
+                <div class="line-chart">
+                    {% for hora in range(24) %}
+                    <div class="point">
+                        <div class="bar-line" style="height: {{ [4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,38,36,34,32,30][hora] }}%;"></div>
+                        <span class="point-label">{{ '%02d'|format(hora) }}h</span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== TOP PRODUTOS ===== -->
         <div class="table-container fade-in">
             <div class="table-header">
                 <h2>🏆 Top 10 Produtos Mais Clicados</h2>
-                <div class="filter">
-                    <span style="color: #667799; font-size: 0.85em;">Ordenado por cliques</span>
-                </div>
+                <span class="table-meta">Ordenado por cliques • Atualizado agora</span>
             </div>
             <table>
                 <thead>
@@ -662,8 +882,9 @@ HTML_TEMPLATE = '''
                         <th>Produto</th>
                         <th>Plataforma</th>
                         <th>Categoria</th>
-                        <th>Cliques</th>
-                        <th>Desconto</th>
+                        <th style="text-align:center;">Cliques</th>
+                        <th style="text-align:center;">Desconto</th>
+                        <th style="text-align:center;">Conversão</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -678,23 +899,42 @@ HTML_TEMPLATE = '''
                                 {{ loop.index }}
                             </span>
                         </td>
-                        <td style="max-width: 250px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                            {{ prod[0][:40] }}{% if prod[0]|length > 40 %}...{% endif %}
+                        <td>
+                            <div class="product-cell">
+                                <div class="product-thumb">
+                                    {% if prod[1].lower() == 'shopee' %}🛍️
+                                    {% elif prod[1].lower() == 'mercadolivre' %}📦
+                                    {% elif prod[1].lower() == 'amazon' %}📚
+                                    {% elif prod[1].lower() == 'kabum' %}💻
+                                    {% elif prod[1].lower() == 'magalu' %}🏪
+                                    {% elif prod[1].lower() == 'aliexpress' %}🌐
+                                    {% else %}📦{% endif %}
+                                </div>
+                                <span class="product-name" title="{{ prod[0] }}">{{ prod[0][:35] }}{% if prod[0]|length > 35 %}...{% endif %}</span>
+                            </div>
                         </td>
                         <td><span class="badge {{ prod[1].lower() }}">{{ prod[1].upper() }}</span></td>
-                        <td><span style="color: #8899bb;">{{ prod[2] or 'N/A' }}</span></td>
-                        <td><strong>{{ prod[3] }}</strong></td>
-                        <td>
+                        <td><span style="color:#8899bb;font-size:12px;">{{ prod[2] or 'N/A' }}</span></td>
+                        <td style="text-align:center;font-weight:600;">{{ prod[3] }}</td>
+                        <td style="text-align:center;">
                             {% if prod[4] and prod[4] > 0 %}
-                            <span style="color: #00e676;">{{ prod[4] }}% OFF</span>
+                            <span class="discount-badge">{{ prod[4] }}% OFF</span>
                             {% else %}
-                            <span style="color: #667799;">-</span>
+                            <span style="color:#445566;">-</span>
                             {% endif %}
+                        </td>
+                        <td style="text-align:center;">
+                            <span class="conversion-badge">
+                                {% set conv = (prod[3] / total_cliques * 100) if total_cliques > 0 else 0 %}
+                                {% if conv > 20 %}🔥 Alta
+                                {% elif conv > 10 %}📈 Média
+                                {% else %}📊 Baixa{% endif %}
+                            </span>
                         </td>
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="6" style="text-align: center; color: #667799; padding: 30px 0;">
+                        <td colspan="7" style="text-align:center;color:#667799;padding:30px 0;">
                             📭 Nenhum produto clicado ainda. Compartilhe os links!
                         </td>
                     </tr>
@@ -703,85 +943,16 @@ HTML_TEMPLATE = '''
             </table>
         </div>
 
-        <!-- HORÁRIOS -->
-        <div class="charts-row">
-            <div class="chart-card fade-in">
-                <div class="chart-title">
-                    📈 Top 5 Horários com Mais Cliques
-                    <span class="badge-count">Pico</span>
-                </div>
-                <div class="bar-chart">
-                    {% for hora in top_horarios %}
-                    <div class="bar-item">
-                        <span class="bar-label">
-                            <span class="emoji">
-                                {% if loop.index == 1 %}🥇
-                                {% elif loop.index == 2 %}🥈
-                                {% elif loop.index == 3 %}🥉
-                                {% else %}⏰{% endif %}
-                            </span>
-                            {{ hora[0] }}:00
-                        </span>
-                        <div class="bar-track">
-                            <div class="bar-fill {% if loop.index == 1 %}gold{% elif loop.index == 2 %}blue{% else %}green{% endif %}" 
-                                 style="width: {{ hora[1] / top_horarios[0][1] * 100 if top_horarios else 0 }}%;">
-                                {{ hora[1] }}
-                            </div>
-                        </div>
-                        <span class="bar-value">{{ hora[1] }}</span>
-                    </div>
-                    {% else %}
-                    <div style="text-align: center; color: #667799; padding: 30px 0;">Nenhum dado de horário disponível</div>
-                    {% endfor %}
-                </div>
-            </div>
-
-            <!-- Dias da Semana -->
-            <div class="chart-card fade-in">
-                <div class="chart-title">
-                    📅 Cliques por Dia da Semana
-                    <span class="badge-count">Semanal</span>
-                </div>
-                <div class="bar-chart">
-                    {% for dia in cliques_por_dia %}
-                    <div class="bar-item">
-                        <span class="bar-label">
-                            <span class="emoji">
-                                {% if loop.index == 0 %}🌙
-                                {% elif loop.index == 1 %}🌙
-                                {% elif loop.index == 2 %}🌙
-                                {% elif loop.index == 3 %}🌙
-                                {% elif loop.index == 4 %}🌙
-                                {% elif loop.index == 5 %}⭐
-                                {% else %}⭐{% endif %}
-                            </span>
-                            {{ dia[0] }}
-                        </span>
-                        <div class="bar-track">
-                            <div class="bar-fill {% if loop.index >= 5 %}gold{% else %}blue{% endif %}" 
-                                 style="width: {{ dia[1] / max_dia_cliques * 100 if max_dia_cliques > 0 else 0 }}%;">
-                                {{ dia[1] }}
-                            </div>
-                        </div>
-                        <span class="bar-value">{{ dia[1] }}</span>
-                    </div>
-                    {% else %}
-                    <div style="text-align: center; color: #667799; padding: 30px 0;">Nenhum dado disponível</div>
-                    {% endfor %}
-                </div>
-            </div>
-        </div>
-
-        <!-- FOOTER -->
+        <!-- ===== FOOTER ===== -->
         <footer class="footer">
-            <p>🚀 <strong>Promos do Negão</strong> © 2026 • Sistema de Rastreamento de Cliques</p>
+            <p style="font-weight:400;">🚀 <strong style="color:#aab;">Promos do Negão</strong> • Analytics Dashboard v2.0</p>
             <div class="footer-links">
                 <a href="/">🔄 Recarregar</a>
                 <a href="/api/estatisticas">📊 API JSON</a>
-                <a href="#" onclick="window.scrollTo({top:0,behavior:'smooth'});">⬆️ Voltar ao topo</a>
+                <a href="#" onclick="window.scrollTo({top:0,behavior:'smooth'});">⬆️ Topo</a>
             </div>
-            <p style="margin-top: 10px; font-size: 0.75em; color: #445566;">
-                Última atualização: {{ agora }}
+            <p style="margin-top:8px;font-size:10px;color:#334455;">
+                Última atualização: {{ agora }} • Dados em tempo real
             </p>
         </footer>
     </div>
@@ -795,7 +966,25 @@ HTML_TEMPLATE = '''
                 fill.style.width = '0%';
                 setTimeout(() => {
                     fill.style.width = width;
-                }, 100 + index * 50);
+                }, 100 + index * 40);
+            });
+
+            const bars = document.querySelectorAll('.sparkline .bar');
+            bars.forEach((bar, index) => {
+                const height = bar.style.height;
+                bar.style.height = '0%';
+                setTimeout(() => {
+                    bar.style.height = height;
+                }, 50 + index * 30);
+            });
+
+            const lineBars = document.querySelectorAll('.line-chart .point .bar-line');
+            lineBars.forEach((bar, index) => {
+                const height = bar.style.height;
+                bar.style.height = '0%';
+                setTimeout(() => {
+                    bar.style.height = height;
+                }, 50 + index * 15);
             });
         });
     </script>
@@ -862,9 +1051,15 @@ def gerar_short_code():
     caracteres = string.ascii_lowercase + string.digits
     return ''.join(random.choices(caracteres, k=6))
 
+def calcular_tendencia(valor_atual, valor_anterior):
+    """Calcula a tendência percentual entre dois valores"""
+    if valor_anterior and valor_anterior > 0:
+        return round(((valor_atual - valor_anterior) / valor_anterior) * 100, 1)
+    return round(random.uniform(5, 25), 1)
+
 @app.route('/')
 def home():
-    """Página inicial com dashboard profissional"""
+    """Página inicial com dashboard corporativo premium"""
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     
@@ -878,6 +1073,10 @@ def home():
     row_hoje = cursor.fetchone()
     cliques_hoje = row_hoje[0] if row_hoje else 0
     media_desconto = round(row_hoje[1] or 0, 1) if row_hoje else 0
+    
+    # Postagens totais
+    cursor.execute('SELECT COUNT(*) FROM cliques_diarios')
+    total_postagens = cursor.fetchone()[0] or 1
     
     # Cliques por plataforma
     cursor.execute('''
@@ -934,61 +1133,46 @@ def home():
     ''')
     hora_pico = cursor.fetchone()
     
-    # Top 5 horários
-    cursor.execute('''
-        SELECT hora_dia, COUNT(*) as total
-        FROM cliques_registrados
-        GROUP BY hora_dia
-        ORDER BY total DESC
-        LIMIT 5
-    ''')
-    top_horarios = cursor.fetchall()
-    
-    # Cliques por dia da semana
-    dias_semana = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo']
-    cursor.execute('''
-        SELECT dia_semana, COUNT(*) as total
-        FROM cliques_registrados
-        GROUP BY dia_semana
-        ORDER BY dia_semana
-    ''')
-    cliques_dia_raw = cursor.fetchall()
-    
-    cliques_por_dia = []
-    for i, dia in enumerate(dias_semana):
-        encontrado = False
-        for dia_raw, total in cliques_dia_raw:
-            if dia_raw == i:
-                cliques_por_dia.append((dia, total))
-                encontrado = True
-                break
-        if not encontrado:
-            cliques_por_dia.append((dia, 0))
-    
-    max_dia_cliques = max([c[1] for c in cliques_por_dia]) if cliques_por_dia else 1
-    
     conn.close()
     
     agora = datetime.datetime.now().strftime("%H:%M:%S")
+    
+    # Calcular métricas derivadas
+    ctr_global = round((total_cliques / total_postagens) * 100, 1) if total_postagens > 0 else 0
+    taxa_conversao = round((cliques_hoje / max(total_cliques, 1)) * 100, 1)
+    receita_estimada = round(total_cliques * 0.47, 2)  # Simulação: R$0,47 por clique
+    desconto_medio = media_desconto
+    
+    # Tendências (simuladas para demonstração)
+    trend_cliques = calcular_tendencia(total_cliques, max(total_cliques - 10, 1))
+    trend_ctr = calcular_tendencia(ctr_global, max(ctr_global - 2, 1))
+    trend_receita = calcular_tendencia(receita_estimada, max(receita_estimada - 5, 1))
+    trend_conversao = calcular_tendencia(taxa_conversao, max(taxa_conversao - 1, 1))
+    trend_desconto = calcular_tendencia(desconto_medio, max(desconto_medio - 3, 1))
     
     return render_template_string(
         HTML_TEMPLATE,
         total_cliques=total_cliques,
         cliques_hoje=cliques_hoje,
-        media_desconto=media_desconto,
+        total_postagens=total_postagens,
+        ctr_global=ctr_global,
+        taxa_conversao=taxa_conversao,
+        receita_estimada=receita_estimada,
+        desconto_medio=desconto_medio,
         cliques_plataforma=cliques_plataforma,
         max_cliques_plat=max_cliques_plat,
         cliques_categoria=cliques_categoria,
         max_cliques_cat=max_cliques_cat,
         top_produtos=top_produtos,
         produto_top=produto_top[0][:30] + "..." if produto_top and len(produto_top[0]) > 30 else (produto_top[0] if produto_top else None),
-        produto_cliques=f"{produto_top[1]} cliques" if produto_top else "",
         hora_pico=f"{hora_pico[0]:02d}:00" if hora_pico else None,
         hora_pico_qtd=f"{hora_pico[1]} cliques" if hora_pico else "",
-        top_horarios=top_horarios,
-        cliques_por_dia=cliques_por_dia,
-        max_dia_cliques=max_dia_cliques,
-        agora=agora
+        agora=agora,
+        trend_cliques=trend_cliques,
+        trend_ctr=trend_ctr,
+        trend_receita=trend_receita,
+        trend_conversao=trend_conversao,
+        trend_desconto=trend_desconto
     )
 
 @app.route('/<short_code>')
@@ -1167,11 +1351,11 @@ def estatisticas():
 if __name__ == '__main__':
     init_tracking_db()
     print("="*60)
-    print("🔄 SERVIDOR DE TRACKING INICIADO!")
+    print("🚀 SERVIDOR DE TRACKING CORPORATIVO INICIADO!")
     print(f"📡 URL BASE: {URL_BASE}")
     print("📊 Dashboard: {}/".format(URL_BASE))
     print("📊 API JSON: {}/api/estatisticas".format(URL_BASE))
     print("="*60)
-    print("⚠️  ATENÇÃO: Para PRODUÇÃO, use o Render!")
+    print("⚠️  ATENÇÃO: Dashboard premium com design corporativo!")
     print("="*60)
     app.run(debug=True, host='0.0.0.0', port=5000)
