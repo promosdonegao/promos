@@ -1,5 +1,5 @@
 # tracking_server.py - Dashboard Corporativo Ultra Premium
-# Combinando métricas de Shopee, ML, Amazon, Awin e Analytics Avançado
+# SEM pytz - Usa datetime nativo com ajuste manual
 
 from flask import Flask, redirect, request, jsonify, render_template_string
 import sqlite3
@@ -11,8 +11,6 @@ import json
 import math
 from collections import Counter, defaultdict
 import statistics
-import pytz
-import os
 
 app = Flask(__name__)
 
@@ -20,12 +18,11 @@ app = Flask(__name__)
 DB_PATH = 'cliques_links.db'
 URL_BASE = 'https://promos-tracking.onrender.com'
 
-# ====== FUSO HORÁRIO BRASIL ======
-TIMEZONE_BR = pytz.timezone('America/Sao_Paulo')
-
+# ====== FUSO HORÁRIO BRASIL (UTC-3) ======
 def agora_br():
-    """Retorna a data/hora atual no fuso horário do Brasil"""
-    return datetime.datetime.now(TIMEZONE_BR)
+    """Retorna a data/hora atual no fuso horário do Brasil (UTC-3)"""
+    agora_utc = datetime.datetime.utcnow()
+    return agora_utc - datetime.timedelta(hours=3)
 
 def hoje_br():
     """Retorna a data atual no fuso horário do Brasil"""
@@ -1247,7 +1244,7 @@ if __name__ == '__main__':
     print("=" * 70)
     print("✅ Métricas integradas: Shopee | Mercado Livre | Amazon | Awin")
     print("📈 Analytics: EPC | CTR | Taxa de Conversão | Receita Estimada")
-    print("🇧🇷 Fuso horário: America/Sao_Paulo (UTC-3)")
+    print("🇧🇷 Fuso horário: UTC-3 (Horário de Brasília)")
     print("=" * 70)
     # 🔥 CORREÇÃO: Desligar debug em produção
     app.run(debug=False, host='0.0.0.0', port=5000)
