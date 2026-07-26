@@ -112,7 +112,7 @@ def salvar_ultimo_timestamp(timestamp):
         logger.error(f"Erro ao salvar timestamp: {e}")
 
 def carregar_ultimo_timestamp():
-    """Carrega o último timestamp de envio do banco"""
+    """Carrega o último timestamp de envio do banco. Se a fila estiver vazia ao iniciar, define o timestamp para o momento atual para garantir a espera correta de 8 minutos."""
     try:
         conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
         cursor = conn.cursor()
@@ -128,13 +128,14 @@ def carregar_ultimo_timestamp():
         
         if row and row[0]:
             try:
-                return datetime.datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+                dt = datetime.datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+                return dt
             except:
-                return datetime.datetime.min
-        return datetime.datetime.min
+                return datetime.datetime.now()
+        return datetime.datetime.now()
     except Exception as e:
         logger.error(f"Erro ao carregar timestamp: {e}")
-        return datetime.datetime.min
+        return datetime.datetime.now()
 
 # Carrega o timestamp ao iniciar
 ULTIMO_ENVIO_TIMESTAMP = carregar_ultimo_timestamp()
@@ -361,18 +362,6 @@ def ajustar_fila_ao_iniciar():
     conn.close()
     registrar_log_sistema("ajustar_fila", f"Horários de {len(itens)} itens reajustados na inicialização.")
 
-def garantir_janela_funcionamento(dt):
-    hora_minuto = dt.time()
-    inicio = datetime.time(7, 15)
-    fim = datetime.time(23, 30)
-
-    if hora_minuto < inicio:
-        dt = dt.replace(hour=7, minute=15, second=0, microsecond=0)
-    elif hora_minuto > fim:
-        dt += datetime.timedelta(days=1)
-        dt = dt.replace(hour=7, minute=15, second=0, microsecond=0)
-    return dt
-
 def identificar_plataforma(link):
     if not link:
         return 'geral'
@@ -482,11 +471,17 @@ def registrar_envio_historico(link, short_code=None, categoria=None, titulo=None
     registrar_log_sistema("envio_historico", f"Link registrado no histórico: {link_limpo}")
 
 def adicionar_fila(dados, link, texto_adicional, origem='manual', file_id_foto=None):
+    global ULTIMO_ENVIO_TIMESTAMP
     duplicado = verificar_duplicidade(link)
     data_agendamento = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
+    
+    # Verifica se a fila estava completamente vazia antes de inserir este item
+    cursor.execute('SELECT COUNT(*) FROM fila_postagens WHERE status = ?', ('pendente',))
+    total_fila_antes = cursor.fetchone()[0]
+
     cursor.execute(
         'INSERT INTO fila_postagens (dados_json, link, texto_adicional, data_agendamento, origem, file_id_foto, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
         (json.dumps(dados), link, texto_adicional, data_agendamento, origem, file_id_foto, 'pendente')
@@ -498,6 +493,13 @@ def adicionar_fila(dados, link, texto_adicional, origem='manual', file_id_foto=N
     total_fila = cursor.fetchone()[0]
     conn.close()
     
+    # CORREÇÃO CRUCIAL: Se a fila estava vazia, reinicializamos o timer do último envio para o momento atual.
+    # Assim, o bot obrigatoriamente aguardará 8 minutos a partir de agora antes de disparar este novo produto.
+    if total_fila_antes == 0:
+        ULTIMO_ENVIO_TIMESTAMP = datetime.datetime.now()
+        salvar_ultimo_timestamp(ULTIMO_ENVIO_TIMESTAMP)
+        logger.info("Fila estava vazia. Timer de envio reiniciado para aguardar 8 minutos.")
+
     registrar_log_sistema("adicionar_fila", f"Novo item ID {novo_id} adicionado. Origem: {origem}")
     return total_fila, duplicado, novo_id
 
@@ -1403,6 +1405,7 @@ async def enviar_para_grupo_promos(context, dados, link, texto_adicional="", ori
             )
         
         registrar_envio_historico(link, short_code=None, categoria=identificar_categoria(dados.get('titulo', '')), titulo=dados.get('titulo', ''))
+        # CORREÇÃO: O timestamp é atualizado APÓS o envio bem-sucedido
         ULTIMO_ENVIO_TIMESTAMP = datetime.datetime.now()
         salvar_ultimo_timestamp(ULTIMO_ENVIO_TIMESTAMP)
         return True
@@ -1417,14 +1420,11 @@ async def processador_fila_background(context: ContextTypes.DEFAULT_TYPE):
     if BOT_PAUSADO:
         return
 
-    # Garante a contagem exata em segundos do intervalo de 8 minutos
     agora = datetime.datetime.now()
     intervalo_segundos = INTERVALO_POSTAGEM_MINUTOS * 60
     tempo_desde_ultimo = (agora - ULTIMO_ENVIO_TIMESTAMP).total_seconds()
     
     if tempo_desde_ultimo < intervalo_segundos:
-        faltam = int(intervalo_segundos - tempo_desde_ultimo)
-        logger.info(f"Aguardando intervalo de 8 min: faltam {faltam}s ({faltam // 60}m {faltam % 60}s)")
         return
 
     total_fila = contar_fila_atual()
@@ -1441,6 +1441,7 @@ async def processador_fila_background(context: ContextTypes.DEFAULT_TYPE):
         
         sucesso = await enviar_para_grupo_promos(context, dados, link, texto_adicional, origem, file_id_foto)
         if sucesso:
+            # O timestamp já é atualizado dentro de enviar_para_grupo_promos
             logger.info(f"✅ Postagem enviada com sucesso! Próxima em {INTERVALO_POSTAGEM_MINUTOS} minutos.")
         else:
             conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
@@ -1716,10 +1717,11 @@ async def desbugar_fila_comando(update: Update, context: ContextTypes.DEFAULT_TY
     if update.effective_chat.id != GRUPO_RASCUNHO_ID:
         return
     global ULTIMO_ENVIO_TIMESTAMP
-    ULTIMO_ENVIO_TIMESTAMP = datetime.datetime.min
+    # CORREÇÃO: Aguarda 1 segundo para garantir que o próximo ciclo detecte a fila
+    ULTIMO_ENVIO_TIMESTAMP = datetime.datetime.now() - datetime.timedelta(seconds=INTERVALO_POSTAGEM_MINUTOS * 60 + 1)
     salvar_ultimo_timestamp(ULTIMO_ENVIO_TIMESTAMP)
     registrar_log_sistema("desbugar", "Timestamp resetado para forçar novo envio.")
-    await update.message.reply_text("🛠️ Bot debugado! Próximo envio será imediato.", parse_mode='HTML')
+    await update.message.reply_text("🛠️ Bot debugado! Próximo envio será no próximo ciclo de verificação.", parse_mode='HTML')
 
 async def ver_logs_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GRUPO_RASCUNHO_ID:
@@ -1935,10 +1937,10 @@ async def destravar_fila_comando(update: Update, context: ContextTypes.DEFAULT_T
         return
     
     global ULTIMO_ENVIO_TIMESTAMP
-    ULTIMO_ENVIO_TIMESTAMP = datetime.datetime.min
+    # CORREÇÃO: Usa timedelta para forçar o próximo ciclo
+    ULTIMO_ENVIO_TIMESTAMP = datetime.datetime.now() - datetime.timedelta(seconds=INTERVALO_POSTAGEM_MINUTOS * 60 + 1)
     salvar_ultimo_timestamp(ULTIMO_ENVIO_TIMESTAMP)
     
-    await processador_fila_background(context)
     await update.message.reply_text("🚀 Fila destravada! Verificando se há itens para enviar...", parse_mode='HTML')
 
 async def prever_item_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2166,7 +2168,8 @@ def main():
     application = Application.builder().token(TOKEN).build()
     
     if application.job_queue:
-        application.job_queue.run_repeating(processador_fila_background, interval=30.0, first=5.0)
+        # CORREÇÃO: Executa a verificação a cada 5 segundos para maior precisão
+        application.job_queue.run_repeating(processador_fila_background, interval=5.0, first=5.0)
     
     conv_handler = ConversationHandler(
         entry_points=[
