@@ -39,8 +39,10 @@ LINK_VITRINE_AMAZON = 'https://www.amazon.com.br?tag=promosdoneg00-20'
 LINK_PERFIL_ML = 'https://www.mercadolivre.com.br/social/pp20251117152052'
 
 # ====== CONFIGURAÇÃO DO SERVIDOR DE TRACKING ======
-TRACKING_SERVER = 'http://localhost:5000'
-DOMINIO_TRACKING = 'http://localhost:5000'
+# ALTERE ESTA URL PARA O SEU DOMÍNIO NO RENDER QUANDO FIZER O DEPLOY
+TRACKING_SERVER = os.environ.get('TRACKING_SERVER', 'https://promos-tracking.onrender.com')
+DOMINIO_TRACKING = os.environ.get('DOMINIO_TRACKING', 'https://promos-tracking.onrender.com')
+# Para testes locais, use: TRACKING_SERVER = 'http://localhost:5000'
 
 # ====== NOVO: Banco de dados de métricas avançadas ======
 DB_METRICS_PATH = 'metricas_avancadas.db'
