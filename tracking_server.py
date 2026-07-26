@@ -11,12 +11,29 @@ import json
 import math
 from collections import Counter, defaultdict
 import statistics
+import pytz
+import os
 
 app = Flask(__name__)
 
 # Configuração do banco de dados
 DB_PATH = 'cliques_links.db'
 URL_BASE = 'https://promos-tracking.onrender.com'
+
+# ====== FUSO HORÁRIO BRASIL ======
+TIMEZONE_BR = pytz.timezone('America/Sao_Paulo')
+
+def agora_br():
+    """Retorna a data/hora atual no fuso horário do Brasil"""
+    return datetime.datetime.now(TIMEZONE_BR)
+
+def hoje_br():
+    """Retorna a data atual no fuso horário do Brasil"""
+    return agora_br().strftime("%Y-%m-%d")
+
+def hora_br():
+    """Retorna a hora atual no fuso horário do Brasil"""
+    return agora_br().strftime("%H:%M:%S")
 
 # ====== MÉTRICAS DE REFERÊNCIA POR PLATAFORMA ======
 METRICAS_PLATAFORMA = {
@@ -131,13 +148,11 @@ HTML_TEMPLATE = '''
 
         .container { max-width: 1440px; margin: 0 auto; }
 
-        /* Scrollbar */
         ::-webkit-scrollbar { width: 4px; height: 4px; }
         ::-webkit-scrollbar-track { background: rgba(255,255,255,0.02); }
         ::-webkit-scrollbar-thumb { background: rgba(255,215,0,0.25); border-radius: 10px; }
         ::-webkit-scrollbar-thumb:hover { background: rgba(255,215,0,0.4); }
 
-        /* HEADER */
         .header {
             display: flex;
             justify-content: space-between;
@@ -193,7 +208,6 @@ HTML_TEMPLATE = '''
         .header-time { font-size: 13px; color: var(--text-secondary); }
         .header-time strong { color: #aab; font-weight: 500; }
 
-        /* METRICS GRID */
         .metrics-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -252,7 +266,6 @@ HTML_TEMPLATE = '''
         .metric-card .card-sub { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
         .metric-card .card-sub strong { color: #aab; font-weight: 500; }
 
-        /* CHARTS ROW */
         .charts-row {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -284,7 +297,6 @@ HTML_TEMPLATE = '''
             margin-left: 8px;
         }
 
-        /* BAR CHART */
         .bar-chart { display: flex; flex-direction: column; gap: 6px; }
         .bar-item { display: flex; align-items: center; gap: 10px; }
         .bar-item .bar-label {
@@ -322,7 +334,6 @@ HTML_TEMPLATE = '''
             color: #aab;
         }
 
-        /* LINE CHART */
         .line-chart-container { padding: 4px 0; }
         .line-chart {
             display: flex; align-items: flex-end;
@@ -353,7 +364,6 @@ HTML_TEMPLATE = '''
             font-weight: 400;
         }
 
-        /* TABLE */
         .table-container {
             background: var(--bg-card);
             border-radius: var(--radius);
@@ -434,7 +444,6 @@ HTML_TEMPLATE = '''
             font-size: 11px;
         }
 
-        /* FOOTER */
         .footer {
             text-align: center; padding: 24px 20px 10px;
             color: var(--text-muted); font-size: 11px;
@@ -450,7 +459,6 @@ HTML_TEMPLATE = '''
         .footer .footer-links a { font-size: 11px; color: var(--text-muted); }
         .footer .footer-links a:hover { color: var(--gold); }
 
-        /* RESPONSIVE */
         @media (max-width: 768px) {
             body { padding: 14px; }
             .header { flex-direction: column; align-items: flex-start; padding: 16px 18px; }
@@ -487,7 +495,6 @@ HTML_TEMPLATE = '''
 <body>
     <div class="container">
 
-        <!-- HEADER -->
         <header class="header fade-in">
             <div class="header-left">
                 <div class="header-logo">📊</div>
@@ -502,12 +509,11 @@ HTML_TEMPLATE = '''
                     <span class="status-text">Online</span>
                 </div>
                 <div class="header-time">
-                    Última atualização <strong>{{ agora }}</strong>
+                    🇧🇷 Última atualização <strong>{{ agora }}</strong>
                 </div>
             </div>
         </header>
 
-        <!-- METRICS GRID -->
         <div class="metrics-grid">
             <div class="metric-card fade-in delay-1">
                 <div class="card-top">
@@ -590,7 +596,6 @@ HTML_TEMPLATE = '''
             </div>
         </div>
 
-        <!-- CHARTS ROW 1 -->
         <div class="charts-row">
             <div class="chart-card fade-in">
                 <div class="chart-header">
@@ -643,7 +648,6 @@ HTML_TEMPLATE = '''
             </div>
         </div>
 
-        <!-- CHARTS ROW 2 -->
         <div class="charts-row">
             <div class="chart-card fade-in">
                 <div class="chart-header">
@@ -693,7 +697,6 @@ HTML_TEMPLATE = '''
             </div>
         </div>
 
-        <!-- LINE CHART 24H -->
         <div class="chart-card fade-in" style="margin-bottom:24px;">
             <div class="chart-header">
                 <span class="chart-title">📈 Cliques nas Últimas 24 Horas</span>
@@ -711,7 +714,6 @@ HTML_TEMPLATE = '''
             </div>
         </div>
 
-        <!-- TOP PRODUTOS -->
         <div class="table-container fade-in">
             <div class="table-header">
                 <h2>🏆 Top 10 Produtos Mais Clicados</h2>
@@ -774,7 +776,6 @@ HTML_TEMPLATE = '''
             </table>
         </div>
 
-        <!-- FOOTER -->
         <footer class="footer">
             <p style="font-weight:400;">🚀 <strong style="color:#aab;">Promos do Negão</strong> • Enterprise Analytics v3.0</p>
             <div class="footer-links">
@@ -783,7 +784,7 @@ HTML_TEMPLATE = '''
                 <a href="#" onclick="window.scrollTo({top:0,behavior:'smooth'});">⬆️ Topo</a>
             </div>
             <p style="margin-top:6px;font-size:9px;color:#334455;">
-                Última atualização: {{ agora }} • Dados em tempo real • Powered by Python Analytics
+                🇧🇷 Horário Brasil • Última atualização: {{ agora }} • Dados em tempo real
             </p>
         </footer>
     </div>
@@ -897,26 +898,23 @@ def home():
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     
-    # Total de cliques
+    agora = agora_br()
+    hoje = agora.strftime("%Y-%m-%d")
+    
     cursor.execute('SELECT COUNT(*) FROM cliques_registrados')
     total_cliques = cursor.fetchone()[0] or 0
     
-    # Clickers únicos
     cursor.execute('SELECT COUNT(DISTINCT ip_cliente) FROM cliques_registrados')
     total_clickers = cursor.fetchone()[0] or 0
     
-    # Cliques hoje
-    hoje = datetime.datetime.now().strftime("%Y-%m-%d")
     cursor.execute('SELECT total_cliques, media_desconto FROM cliques_diarios WHERE data_clique = ?', (hoje,))
     row_hoje = cursor.fetchone()
     cliques_hoje = row_hoje[0] if row_hoje else 0
     desconto_medio = round(row_hoje[1] or 0, 1) if row_hoje else 0
     
-    # Postagens totais
     cursor.execute('SELECT COUNT(DISTINCT short_code) FROM cliques_tracking')
     total_postagens = cursor.fetchone()[0] or 1
     
-    # Cliques por plataforma
     cursor.execute('''
         SELECT plataforma, COUNT(*) as total
         FROM cliques_tracking t
@@ -927,7 +925,6 @@ def home():
     cliques_plataforma = cursor.fetchall()
     max_cliques_plat = cliques_plataforma[0][1] if cliques_plataforma else 1
     
-    # Cliques por categoria
     cursor.execute('''
         SELECT categoria, COUNT(*) as total
         FROM cliques_tracking t
@@ -939,7 +936,6 @@ def home():
     cliques_categoria = cursor.fetchall()
     max_cliques_cat = cliques_categoria[0][1] if cliques_categoria else 1
     
-    # Top produtos
     cursor.execute('''
         SELECT t.titulo_produto, t.plataforma, t.categoria, COUNT(*) as total, t.desconto_percentual
         FROM cliques_tracking t
@@ -950,7 +946,6 @@ def home():
     ''')
     top_produtos = cursor.fetchall()
     
-    # Produto mais clicado
     cursor.execute('''
         SELECT t.titulo_produto, COUNT(*) as total, t.plataforma, t.categoria
         FROM cliques_tracking t
@@ -963,7 +958,6 @@ def home():
     produto_top_nome = produto_top[0][:25] + "..." if produto_top and len(produto_top[0]) > 25 else (produto_top[0] if produto_top else "Nenhum")
     produto_top_cliques = produto_top[1] if produto_top else 0
     
-    # Calcular comissão do produto top
     if produto_top:
         plataforma = produto_top[2] if len(produto_top) > 2 else 'geral'
         categoria = produto_top[3] if len(produto_top) > 3 else None
@@ -972,7 +966,6 @@ def home():
     else:
         produto_top_comissao = 0
     
-    # Horário de pico
     cursor.execute('''
         SELECT hora_dia, COUNT(*) as total
         FROM cliques_registrados
@@ -983,7 +976,6 @@ def home():
     hora_pico = cursor.fetchone()
     taxa_pico = round((hora_pico[1] / total_cliques * 100) if total_cliques > 0 else 0, 1) if hora_pico else 0
     
-    # Cliques por dia da semana
     dias_semana = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo']
     cursor.execute('''
         SELECT dia_semana, COUNT(*) as total
@@ -1005,7 +997,6 @@ def home():
             cliques_por_dia.append((dia, 0))
     max_dia_cliques = max([c[1] for c in cliques_por_dia]) if cliques_por_dia else 1
     
-    # Calcular receita por plataforma
     receita_plataforma = []
     total_receita = 0
     for plat, cliques in cliques_plataforma:
@@ -1017,14 +1008,12 @@ def home():
     max_receita = receita_plataforma[0][1] if receita_plataforma else 1
     receita_hoje = (cliques_hoje / max(total_cliques, 1)) * total_receita if total_cliques > 0 else 0
     
-    # Métricas avançadas
     ctr_global = round((total_cliques / total_postagens) * 100, 1) if total_postagens > 0 else 0
     taxa_aprovacao = round(min(ctr_global * 0.6, 95), 1)
     taxa_conversao = round((cliques_hoje / max(total_cliques, 1)) * 100, 1)
     conversoes_estimadas = round(total_cliques * (taxa_conversao / 100), 0)
     epc_global = round(total_receita / max(total_cliques, 1), 2) if total_cliques > 0 else 0
     
-    # Tendências (simuladas baseadas em dados reais)
     trend_cliques = round(random.uniform(8, 22), 1)
     trend_receita = round(random.uniform(10, 25), 1)
     trend_ctr = round(random.uniform(3, 12), 1)
@@ -1033,7 +1022,7 @@ def home():
     trend_epc = round(random.uniform(5, 15), 1)
     
     conn.close()
-    agora = datetime.datetime.now().strftime("%H:%M:%S")
+    agora_str = agora.strftime("%H:%M:%S")
     
     return render_template_string(
         HTML_TEMPLATE,
@@ -1065,7 +1054,7 @@ def home():
         taxa_pico=taxa_pico,
         cliques_por_dia=cliques_por_dia,
         max_dia_cliques=max_dia_cliques,
-        agora=agora,
+        agora=agora_str,
         trend_cliques=trend_cliques,
         trend_receita=trend_receita,
         trend_ctr=trend_ctr,
@@ -1089,7 +1078,7 @@ def redirecionar(short_code):
     
     link_original, titulo, plataforma, categoria, preco_desc, preco_orig, desconto = row
     
-    agora = datetime.datetime.now()
+    agora = agora_br()
     data_clique = agora.strftime("%Y-%m-%d")
     hora_dia = agora.hour
     dia_semana = agora.weekday()
@@ -1166,7 +1155,7 @@ def criar_link_rastreado():
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     cursor = conn.cursor()
     
-    agora = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    agora = agora_br().strftime("%Y-%m-%d %H:%M:%S")
     
     cursor.execute('''
         INSERT INTO cliques_tracking 
@@ -1231,7 +1220,7 @@ def estatisticas():
     ''')
     media_desconto = cursor.fetchone()[0] or 0
     
-    hoje = datetime.datetime.now().strftime("%Y-%m-%d")
+    hoje = hoje_br()
     cursor.execute('SELECT total_cliques FROM cliques_diarios WHERE data_clique = ?', (hoje,))
     cliques_hoje = cursor.fetchone()
     cliques_hoje = cliques_hoje[0] if cliques_hoje else 0
@@ -1250,7 +1239,7 @@ def estatisticas():
 if __name__ == '__main__':
     init_tracking_db()
     print("=" * 70)
-    print("🚀 PROMOS DO NEGÃO - ENTERPRISE ANALYTICS v3.0")
+    print("🇧🇷 PROMOS DO NEGÃO - ENTERPRISE ANALYTICS v3.0 (Horário Brasil)")
     print("=" * 70)
     print(f"📡 URL BASE: {URL_BASE}")
     print("📊 Dashboard: {}/".format(URL_BASE))
@@ -1258,6 +1247,7 @@ if __name__ == '__main__':
     print("=" * 70)
     print("✅ Métricas integradas: Shopee | Mercado Livre | Amazon | Awin")
     print("📈 Analytics: EPC | CTR | Taxa de Conversão | Receita Estimada")
-    print("🏷️ Categorias: Eletrônicos | Moda | Casa | Beleza | Utilidades")
+    print("🇧🇷 Fuso horário: America/Sao_Paulo (UTC-3)")
     print("=" * 70)
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # 🔥 CORREÇÃO: Desligar debug em produção
+    app.run(debug=False, host='0.0.0.0', port=5000)
