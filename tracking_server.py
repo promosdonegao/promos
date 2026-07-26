@@ -1246,5 +1246,4 @@ if __name__ == '__main__':
     print("📈 Analytics: EPC | CTR | Taxa de Conversão | Receita Estimada")
     print("🇧🇷 Fuso horário: UTC-3 (Horário de Brasília)")
     print("=" * 70)
-    # 🔥 CORREÇÃO: Desligar debug em produção
     app.run(debug=False, host='0.0.0.0', port=5000)
