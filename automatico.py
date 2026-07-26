@@ -39,10 +39,37 @@ LINK_VITRINE_AMAZON = 'https://www.amazon.com.br?tag=promosdoneg00-20'
 LINK_PERFIL_ML = 'https://www.mercadolivre.com.br/social/pp20251117152052'
 
 # ====== CONFIGURAÇÃO DO SERVIDOR DE TRACKING ======
-# ALTERE ESTA URL PARA O SEU DOMÍNIO NO RENDER QUANDO FIZER O DEPLOY
 TRACKING_SERVER = os.environ.get('TRACKING_SERVER', 'https://promos-tracking.onrender.com')
 DOMINIO_TRACKING = os.environ.get('DOMINIO_TRACKING', 'https://promos-tracking.onrender.com')
-# Para testes locais, use: TRACKING_SERVER = 'http://localhost:5000'
+
+# ====== CONFIGURAÇÃO DE AFILIADOS ======
+PARAMETROS_AFILIADOS = {
+    'amazon': '?tag=promosdoneg00-20',
+    'shopee': '?aff_id=18394560427',
+    'mercadolivre': '?aff_id=pp20251117152052'
+}
+
+# ====== INTERVALO ENTRE POSTAGENS (MINUTOS) ======
+INTERVALO_POSTAGEM_MINUTOS = 8
+
+def adicionar_parametro_afiliado(link, plataforma):
+    """Adiciona o parâmetro de afiliado ao link baseado na plataforma"""
+    if not link:
+        return link
+    
+    if plataforma not in PARAMETROS_AFILIADOS:
+        return link
+    
+    if '?' in link:
+        if plataforma == 'amazon' and 'tag=' in link:
+            return link
+        if plataforma == 'shopee' and 'aff_id=' in link:
+            return link
+        if plataforma == 'mercadolivre' and 'aff_id=' in link:
+            return link
+        return link + '&' + PARAMETROS_AFILIADOS[plataforma][1:]
+    else:
+        return link + PARAMETROS_AFILIADOS[plataforma]
 
 # ====== NOVO: Banco de dados de métricas avançadas ======
 DB_METRICS_PATH = 'metricas_avancadas.db'
@@ -55,7 +82,6 @@ CUPOM_IMAGEM = 4
 EDITAR_ITEM_PASSO = 5
 PERSONALIZAR_PRECOS_PASSO = 6
 
-ULTIMO_ENVIO_TIMESTAMP = datetime.datetime.min
 BOT_PAUSADO = False
 
 HEADERS = {
@@ -64,6 +90,54 @@ HEADERS = {
     'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
     'Connection': 'keep-alive',
 }
+
+# ====== FUNÇÕES PARA SALVAR/CARREGAR ÚLTIMO TIMESTAMP ======
+def salvar_ultimo_timestamp(timestamp):
+    """Salva o último timestamp de envio no banco"""
+    try:
+        conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS controle_bot (
+                chave TEXT PRIMARY KEY,
+                valor TEXT
+            )
+        ''')
+        cursor.execute('INSERT OR REPLACE INTO controle_bot (chave, valor) VALUES (?, ?)',
+                       ('ultimo_envio', timestamp.strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Erro ao salvar timestamp: {e}")
+
+def carregar_ultimo_timestamp():
+    """Carrega o último timestamp de envio do banco"""
+    try:
+        conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS controle_bot (
+                chave TEXT PRIMARY KEY,
+                valor TEXT
+            )
+        ''')
+        cursor.execute('SELECT valor FROM controle_bot WHERE chave = ?', ('ultimo_envio',))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row and row[0]:
+            try:
+                return datetime.datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+            except:
+                return datetime.datetime.min
+        return datetime.datetime.min
+    except Exception as e:
+        logger.error(f"Erro ao carregar timestamp: {e}")
+        return datetime.datetime.min
+
+# Carrega o timestamp ao iniciar
+ULTIMO_ENVIO_TIMESTAMP = carregar_ultimo_timestamp()
+logger.info(f"Último envio registrado: {ULTIMO_ENVIO_TIMESTAMP}")
 
 # --- BANCO DE DADOS ESCALÁVEL E CONTROLE DE PERSISTÊNCIA ---
 
@@ -138,6 +212,12 @@ def inicializar_banco():
             short_code TEXT
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS controle_bot (
+            chave TEXT PRIMARY KEY,
+            valor TEXT
+        )
+    ''')
     conn.commit()
     
     cursor.execute("PRAGMA table_info(fila_postagens)")
@@ -160,7 +240,6 @@ def inicializar_banco():
     inicializar_metricas_avancadas()
 
 def inicializar_metricas_avancadas():
-    """Inicializa o banco de dados de métricas avançadas"""
     conn = sqlite3.connect(DB_METRICS_PATH, timeout=30.0)
     cursor = conn.cursor()
     
@@ -253,28 +332,6 @@ def registrar_evento_postagem(plataforma):
     except Exception as e:
         logger.error(f"Erro ao registrar evento de interacao: {e}")
 
-def registrar_clique_produto(titulo, link, plataforma):
-    try:
-        conn = sqlite3.connect('promos_fila.db', timeout=30.0)
-        cursor = conn.cursor()
-        agora = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        link_limpo = limpar_url_para_verificacao(link)
-        
-        cursor.execute("SELECT id, total_cliques FROM cliques_links WHERE link = ?", (link_limpo,))
-        row = cursor.fetchone()
-        if row:
-            novos_cliques = row[1] + 1
-            cursor.execute("UPDATE cliques_links SET total_cliques = ?, data_ultimo_clique = ? WHERE id = ?", (novos_cliques, agora, row[0]))
-        else:
-            cursor.execute(
-                "INSERT INTO cliques_links (produto_titulo, link, plataforma, total_cliques, data_ultimo_clique) VALUES (?, ?, ?, 1, ?)",
-                (titulo, link_limpo, plataforma, agora)
-            )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.error(f"Erro ao registrar clique: {e}")
-
 def ajustar_fila_ao_iniciar():
     conn = sqlite3.connect('promos_fila.db', timeout=30.0)
     cursor = conn.cursor()
@@ -289,7 +346,7 @@ def ajustar_fila_ao_iniciar():
 
     proximo_horario = agora
     for item_id, _ in itens:
-        proximo_horario += datetime.timedelta(minutes=8)
+        proximo_horario += datetime.timedelta(minutes=INTERVALO_POSTAGEM_MINUTOS)
         proximo_horario = garantir_janela_funcionamento(proximo_horario)
         novo_horario_str = proximo_horario.strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("UPDATE fila_postagens SET data_agendamento = ? WHERE id = ?", (novo_horario_str, item_id))
@@ -338,7 +395,6 @@ def identificar_plataforma(link):
         return 'geral'
 
 def incrementar_e_verificar_contador_plataforma(plataforma):
-    """Incrementa o contador de postagens por plataforma e retorna o valor atual"""
     conn = sqlite3.connect('promos_fila.db', timeout=30.0)
     cursor = conn.cursor()
     cursor.execute('SELECT contador FROM contadores_plataforma WHERE plataforma = ?', (plataforma,))
@@ -358,7 +414,6 @@ def incrementar_e_verificar_contador_plataforma(plataforma):
     return atual
 
 def identificar_categoria(titulo):
-    """Identifica a categoria do produto baseado no título"""
     titulo_lower = titulo.lower() if titulo else ''
     
     categorias = {
@@ -384,7 +439,7 @@ def limpar_url_para_verificacao(url):
     try:
         if not url:
             return ""
-        url_limpa = re.sub(r'([?&])(si|spm|ref|utm_[a-z]+|click_id|aff_id)=[^&]+', '', url)
+        url_limpa = re.sub(r'([?&])(si|spm|ref|utm_[a-z]+|click_id|aff_id|tag)=[^&]+', '', url)
         return url_limpa.strip()
     except Exception as e:
         logger.error(f"Erro ao limpar URL: {e}")
@@ -441,14 +496,31 @@ def adicionar_fila(dados, link, texto_adicional, origem='manual', file_id_foto=N
     return total_fila, duplicado, novo_id
 
 def proximo_da_fila():
+    """Pega o próximo item da fila e já remove ele (para evitar repetição)"""
     conn = sqlite3.connect('promos_fila.db', timeout=30.0)
     cursor = conn.cursor()
+    
     cursor.execute('SELECT id, dados_json, link, texto_adicional, origem, file_id_foto FROM fila_postagens ORDER BY id ASC LIMIT 1')
     row = cursor.fetchone()
+    
+    if not row:
+        conn.close()
+        return None
+    
+    cursor.execute('DELETE FROM fila_postagens WHERE id = ?', (row[0],))
+    conn.commit()
     conn.close()
-    if row:
-        return {'db_id': row[0], 'dados': json.loads(row[1]), 'link': row[2], 'texto_adicional': row[3], 'origem': row[4], 'file_id_foto': row[5]}
-    return None
+    
+    registrar_log_sistema("proximo_fila", f"Item ID {row[0]} retirado da fila para processamento.")
+    
+    return {
+        'db_id': row[0],
+        'dados': json.loads(row[1]),
+        'link': row[2],
+        'texto_adicional': row[3],
+        'origem': row[4],
+        'file_id_foto': row[5]
+    }
 
 def remover_da_fila(db_id):
     conn = sqlite3.connect('promos_fila.db', timeout=30.0)
@@ -525,8 +597,6 @@ def obter_logs_recentes(limite=10):
     rows = cursor.fetchall()
     conn.close()
     return rows
-
-# --- ALGORITMO INTELIGENTE DE ORGANIZAÇÃO POR HORÁRIO E DIVERSIFICAÇÃO ---
 
 def obter_ranking_plataformas_horario_atual():
     hora_atual = datetime.datetime.now().hour
@@ -640,7 +710,7 @@ def reordenar_fila_blocos_de_3():
     registrar_log_sistema("organizar_fila", f"{len(novos_itens_ordenados)} itens reorganizados por categoria em blocos de 3 com diversidade.")
     return len(novos_itens_ordenados)
 
-# --- LISTAS AMPLIADAS DE TEMPLATES E CUPONS SEPARADOS POR PLATAFORMA ---
+# --- LISTAS AMPLIADAS DE TEMPLATES E CUPONS ---
 
 TITULOS_SHOPEE = [
     "🔥 ACHADINHO IMPERDÍVEL NA SHOPEE", "⚡ OPORTUNIDADE RELÂMPAGO NA SHOPEE",
@@ -957,7 +1027,6 @@ def limpar_titulo(titulo):
     return titulo if len(titulo) >= 5 else ""
 
 def extrair_dados_produto(link):
-    """Extrai dados do produto com múltiplas estratégias de fallback"""
     dados = {'titulo': None, 'preco_original': None, 'preco_desconto': None}
     titulo_final = None
     preco_final = None
@@ -967,7 +1036,6 @@ def extrair_dados_produto(link):
         response = session.get(link, headers=HEADERS, timeout=15, allow_redirects=True)
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # 1. Tentar extrair do JSON-LD (Dados Estruturados Schema.org)
         for script in soup.find_all('script', type='application/ld+json'):
             try:
                 data = json.loads(script.string)
@@ -1000,7 +1068,6 @@ def extrair_dados_produto(link):
             except:
                 continue
 
-        # 2. Tentar Meta Tags OpenGraph / Twitter
         if not titulo_final:
             meta_title = (soup.find('meta', {'property': 'og:title'}) or 
                           soup.find('meta', {'name': 'twitter:title'}) or 
@@ -1008,17 +1075,11 @@ def extrair_dados_produto(link):
             if meta_title and meta_title.get('content'):
                 titulo_final = limpar_titulo(meta_title.get('content'))
 
-        # 3. Tentar Tags HTML de Título dos E-commerces
         if not titulo_final:
             h1_selectors = [
-                'h1',
-                'span[class*="title"]',
-                'span[class*="product-name"]',
-                'span[class*="ui-pdp-title"]',
-                'div[class*="product-title"]',
-                'div[class*="item-title"]',
-                'span[itemprop="name"]',
-                'h1[itemprop="name"]'
+                'h1', 'span[class*="title"]', 'span[class*="product-name"]',
+                'span[class*="ui-pdp-title"]', 'div[class*="product-title"]',
+                'div[class*="item-title"]', 'span[itemprop="name"]', 'h1[itemprop="name"]'
             ]
             for selector in h1_selectors:
                 try:
@@ -1030,30 +1091,15 @@ def extrair_dados_produto(link):
                 except:
                     continue
 
-        # 4. Fallback na tag <title>
         if not titulo_final:
             title_tag = soup.find('title')
             if title_tag:
                 titulo_final = limpar_titulo(title_tag.text)
 
-        # 5. Fallback: tenta qualquer texto grande na página
-        if not titulo_final:
-            for elem in soup.find_all(['h1', 'h2', 'h3', 'p']):
-                texto = elem.text.strip()
-                if len(texto) > 15 and len(texto) < 150:
-                    titulo_final = limpar_titulo(texto)
-                    if titulo_final and len(titulo_final) > 5:
-                        break
-
-        # 6. Extração Específica de Preços
         if 'amazon' in link.lower():
-            # Amazon
             price_selectors = [
-                'span.a-price span.a-offscreen',
-                'span.a-price[data-a-size="xl"] span.a-offscreen',
-                'span#priceblock_ourprice',
-                'span#priceblock_dealprice',
-                'span.a-price-whole'
+                'span.a-price span.a-offscreen', 'span.a-price[data-a-size="xl"] span.a-offscreen',
+                'span#priceblock_ourprice', 'span#priceblock_dealprice', 'span.a-price-whole'
             ]
             for selector in price_selectors:
                 try:
@@ -1069,12 +1115,9 @@ def extrair_dados_produto(link):
                     continue
                     
         elif 'mercadolivre' in link.lower() or 'meli.la' in link.lower():
-            # Mercado Livre
             price_selectors = [
-                'span.andes-money-amount__fraction',
-                'span.ui-pdp-price__value',
-                'meta[itemprop="price"]',
-                '.ui-pdp-price--second-line .andes-money-amount__fraction'
+                'span.andes-money-amount__fraction', 'span.ui-pdp-price__value',
+                'meta[itemprop="price"]', '.ui-pdp-price--second-line .andes-money-amount__fraction'
             ]
             for selector in price_selectors:
                 try:
@@ -1094,7 +1137,6 @@ def extrair_dados_produto(link):
                     continue
                     
         elif 'shopee' in link.lower() or 'shp.ee' in link.lower():
-            # Shopee - dados estão em JSON no script
             for script in soup.find_all('script'):
                 if script.string and 'window.__INITIAL_STATE__' in script.string:
                     try:
@@ -1102,19 +1144,16 @@ def extrair_dados_produto(link):
                         match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', script.string, re.DOTALL)
                         if match:
                             data = json.loads(match.group(1))
-                            # Tenta encontrar o preço
                             if 'product' in data and 'price' in data['product']:
-                                preco_final = float(data['product']['price'] / 100000)  # Shopee usa centavos
+                                preco_final = float(data['product']['price'] / 100000)
                             if 'product' in data and 'name' in data['product'] and not titulo_final:
                                 titulo_final = limpar_titulo(data['product']['name'])
                     except:
                         pass
 
-        # Fallback: tenta extrair preço com regex de qualquer lugar
         if not preco_final:
             for script in soup.find_all('script'):
                 if script.string:
-                    # Procura por padrões de preço no script
                     matches = re.findall(r'[Rr]\$[\s]*([\d.,]+)', script.string)
                     for match in matches:
                         try:
@@ -1127,9 +1166,7 @@ def extrair_dados_produto(link):
                     if preco_final:
                         break
 
-        # Se ainda não temos título, usa um padrão
         if not titulo_final or titulo_final == "Produto em Oferta Especial":
-            # Tenta extrair da URL
             url_parts = link.split('/')
             for part in url_parts:
                 if len(part) > 10 and not part.startswith('http'):
@@ -1143,7 +1180,6 @@ def extrair_dados_produto(link):
         dados['titulo'] = titulo_final
         dados['preco_desconto'] = preco_final
         
-        # Tenta extrair preço original (se disponível)
         if 'amazon' in link.lower():
             for script in soup.find_all('script'):
                 if script.string and 'price' in script.string.lower():
@@ -1163,7 +1199,6 @@ def extrair_dados_produto(link):
         
     except Exception as e:
         logger.error(f"Erro ao extrair dados: {e}")
-        # Fallback: tenta extrair pelo menos o título do texto da mensagem original
         return {'titulo': 'Produto em Oferta Especial', 'preco_original': None, 'preco_desconto': None}
 
 def selecionar_cupom_por_plataforma(plataforma):
@@ -1177,8 +1212,10 @@ def selecionar_cupom_por_plataforma(plataforma):
         return random.choice(CUPONS_GERAIS)
 
 def criar_link_rastreado(link_original, titulo, plataforma, preco_desc, preco_orig):
-    """Cria um link encurtado com rastreamento de cliques"""
     try:
+        link_original = adicionar_parametro_afiliado(link_original, plataforma)
+        logger.info(f"Link com afiliado: {link_original}")
+        
         desconto_perc = 0
         if preco_orig and preco_desc and preco_orig > preco_desc:
             desconto_perc = round(((preco_orig - preco_desc) / preco_orig) * 100)
@@ -1240,15 +1277,13 @@ def montar_layout_mensagem(dados, link, texto_adicional, origem='manual'):
         else:
             link_final = LINK_VITRINE_SHOPEE
     else:
-        # Para links manuais, cria link rastreável se o servidor estiver disponível
         link_rastreado = criar_link_rastreado(link, dados.get('titulo', ''), plataforma, p_desc, p_orig)
         if link_rastreado:
             link_final = link_rastreado.get('link_encurtado')
             short_code = link_rastreado.get('short_code')
             categoria = link_rastreado.get('categoria', categoria)
         else:
-            # Fallback: usa o link original
-            link_final = link
+            link_final = adicionar_parametro_afiliado(link, plataforma)
 
     if 'shopee' in link_lower:
         titulo_topo = obter_opcao_sem_repetir_no_dia("titulo_shopee", TITULOS_SHOPEE)
@@ -1285,6 +1320,7 @@ def montar_layout_mensagem(dados, link, texto_adicional, origem='manual'):
     texto_adicional_limpo = limpar_texto_adicional(texto_adicional, link, dados.get('titulo', ''))
 
     badge_tracking = f"🔗 <i>Link rastreável gerado</i>" if short_code else ""
+    badge_afiliado = f"🤝 <i>Link com código de afiliado</i>"
 
     template = "{titulo_topo}\n\n"
     template += "🔥 <b>{titulo_produto}</b>\n\n"
@@ -1316,6 +1352,8 @@ def montar_layout_mensagem(dados, link, texto_adicional, origem='manual'):
     
     if badge_tracking:
         template += f"\n\n{badge_tracking}"
+    if badge_afiliado and short_code:
+        template += f" • {badge_afiliado}"
     
     return template.format(
         titulo_topo=titulo_topo,
@@ -1341,6 +1379,7 @@ async def enviar_para_grupo_promos(context, dados, link, texto_adicional="", ori
                 )
                 registrar_envio_historico(link)
                 ULTIMO_ENVIO_TIMESTAMP = datetime.datetime.now()
+                salvar_ultimo_timestamp(ULTIMO_ENVIO_TIMESTAMP)
                 return True
             except Exception as e_file:
                 logger.error(f"Erro ao enviar com file_id do telegram: {e_file}")
@@ -1353,12 +1392,13 @@ async def enviar_para_grupo_promos(context, dados, link, texto_adicional="", ori
         )
         registrar_envio_historico(link)
         ULTIMO_ENVIO_TIMESTAMP = datetime.datetime.now()
+        salvar_ultimo_timestamp(ULTIMO_ENVIO_TIMESTAMP)
         return True
     except Exception as e:
         logger.error(f"Erro envio final: {e}")
         return False
 
-# --- CONTROLE COM JANELA 07:15 - 23:30 ---
+# --- CONTROLE COM JANELA 07:15 - 23:30 E INTERVALO DE 8 MINUTOS ---
 async def processador_fila_background(context: ContextTypes.DEFAULT_TYPE):
     global ULTIMO_ENVIO_TIMESTAMP, BOT_PAUSADO
     
@@ -1377,14 +1417,16 @@ async def processador_fila_background(context: ContextTypes.DEFAULT_TYPE):
     total_fila = contar_fila_atual()
     if total_fila == 0:
         return
-        
-    tempo_desde_ultimo = (datetime.datetime.now() - ULTIMO_ENVIO_TIMESTAMP).total_seconds() / 60.0
-    if tempo_desde_ultimo < 7.8:
+    
+    # 🔥 VERIFICA O INTERVALO DE 8 MINUTOS (480 segundos)
+    tempo_desde_ultimo = (datetime.datetime.now() - ULTIMO_ENVIO_TIMESTAMP).total_seconds()
+    if tempo_desde_ultimo < (INTERVALO_POSTAGEM_MINUTOS * 60):
+        logger.info(f"Aguardando intervalo: {int((INTERVALO_POSTAGEM_MINUTOS * 60 - tempo_desde_ultimo))}s restantes")
         return
 
+    # Pega o próximo item (já remove da fila automaticamente)
     item = proximo_da_fila()
     if item:
-        db_id = item['db_id']
         dados = item['dados']
         link = item['link']
         texto_adicional = item['texto_adicional']
@@ -1393,7 +1435,7 @@ async def processador_fila_background(context: ContextTypes.DEFAULT_TYPE):
         
         sucesso = await enviar_para_grupo_promos(context, dados, link, texto_adicional, origem, file_id_foto)
         if sucesso:
-            remover_da_fila(db_id)
+            logger.info(f"✅ Postagem enviada com sucesso! Próxima em {INTERVALO_POSTAGEM_MINUTOS} minutos.")
 
 def calcular_horario_publicacao(ordem_na_data):
     agora = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-3)))
@@ -1404,9 +1446,9 @@ def calcular_horario_publicacao(ordem_na_data):
     if hora_atual_minutos < inicio_janela:
         base_minutos = inicio_janela
     else:
-        base_minutos = hora_atual_minutos + 8
+        base_minutos = hora_atual_minutos + INTERVALO_POSTAGEM_MINUTOS
         
-    minutos_totais = base_minutos + ((ordem_na_data - 1) * 8)
+    minutos_totais = base_minutos + ((ordem_na_data - 1) * INTERVALO_POSTAGEM_MINUTOS)
     
     fim_janela = 23 * 60 + 30
     if minutos_totais > fim_janela:
@@ -2300,7 +2342,6 @@ async def destravar_fila_comando(update: Update, context: ContextTypes.DEFAULT_T
     if item:
         sucesso = await enviar_para_grupo_promos(context, item['dados'], item['link'], item['texto_adicional'], item['origem'], item['file_id_foto'])
         if sucesso:
-            remover_da_fila(item['db_id'])
             await update.message.reply_text("🚀 Item disparado com sucesso!", parse_mode='HTML')
         else:
             await update.message.reply_text("❌ Falha ao tentar disparar o item da fila.", parse_mode='HTML')
@@ -2553,7 +2594,11 @@ def main():
     application.add_handler(CommandHandler('retomar', retomar_bot_comando))
     application.add_handler(CommandHandler('prever', prever_item_comando))
     
-    print("Bot rodando com inteligência de horários, tracking de cliques e BI avançado!")
+    print("🚀 Bot rodando com inteligência de horários, tracking de cliques e AFILIADOS!")
+    print("📊 Dashboard: https://promos-tracking.onrender.com")
+    print("🤝 Links com parâmetros de afiliado sendo adicionados automaticamente!")
+    print(f"⏰ Intervalo entre postagens: {INTERVALO_POSTAGEM_MINUTOS} minutos")
+    print(f"🕐 Último envio registrado: {ULTIMO_ENVIO_TIMESTAMP}")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
