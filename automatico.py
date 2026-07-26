@@ -71,8 +71,9 @@ def adicionar_parametro_afiliado(link, plataforma):
     else:
         return link + PARAMETROS_AFILIADOS[plataforma]
 
-# ====== NOVO: Banco de dados de métricas avançadas ======
+# ====== BANCO DE DADOS DE MÉTRICAS E FILA ======
 DB_METRICS_PATH = 'metricas_avancadas.db'
+DB_PROMOS_PATH = 'promos_fila.db'
 
 # Estados da conversa (ConversationHandler)
 AGUARDANDO_PRECO = 1
@@ -95,7 +96,7 @@ HEADERS = {
 def salvar_ultimo_timestamp(timestamp):
     """Salva o último timestamp de envio no banco"""
     try:
-        conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+        conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
         cursor = conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS controle_bot (
@@ -113,7 +114,7 @@ def salvar_ultimo_timestamp(timestamp):
 def carregar_ultimo_timestamp():
     """Carrega o último timestamp de envio do banco"""
     try:
-        conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+        conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
         cursor = conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS controle_bot (
@@ -142,7 +143,7 @@ logger.info(f"Último envio registrado: {ULTIMO_ENVIO_TIMESTAMP}")
 # --- BANCO DE DADOS ESCALÁVEL E CONTROLE DE PERSISTÊNCIA ---
 
 def inicializar_banco():
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
     
     cursor.execute('PRAGMA journal_mode=WAL;')
@@ -156,7 +157,8 @@ def inicializar_banco():
             texto_adicional TEXT,
             data_agendamento TEXT,
             origem TEXT DEFAULT 'manual',
-            file_id_foto TEXT
+            file_id_foto TEXT,
+            status TEXT DEFAULT 'pendente'
         )
     ''')
     cursor.execute('''
@@ -165,7 +167,9 @@ def inicializar_banco():
             link_limpo TEXT,
             data_envio TEXT,
             short_code TEXT,
-            categoria TEXT
+            categoria TEXT,
+            plataforma TEXT,
+            titulo TEXT
         )
     ''')
     cursor.execute('''
@@ -232,11 +236,14 @@ def inicializar_banco():
         logger.info("Adicionando coluna 'file_id_foto' na tabela fila_postagens...")
         cursor.execute("ALTER TABLE fila_postagens ADD COLUMN file_id_foto TEXT")
         conn.commit()
+    
+    if 'status' not in colunas:
+        logger.info("Adicionando coluna 'status' na tabela fila_postagens...")
+        cursor.execute("ALTER TABLE fila_postagens ADD COLUMN status TEXT DEFAULT 'pendente'")
+        conn.commit()
         
     conn.close()
     registrar_log_sistema("inicializar_banco", "Banco de dados inicializado com sucesso.")
-    ajustar_fila_ao_iniciar()
-    
     inicializar_metricas_avancadas()
 
 def inicializar_metricas_avancadas():
@@ -307,7 +314,7 @@ def inicializar_metricas_avancadas():
 
 def registrar_log_sistema(tipo, detalhes):
     try:
-        conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+        conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
         cursor = conn.cursor()
         data_hora = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("INSERT INTO log_operacoes (tipo, detalhes, data_hora) VALUES (?, ?, ?)", (tipo, detalhes, data_hora))
@@ -318,7 +325,7 @@ def registrar_log_sistema(tipo, detalhes):
 
 def registrar_evento_postagem(plataforma):
     try:
-        conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+        conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
         cursor = conn.cursor()
         agora = datetime.datetime.now()
         hora_dia = agora.hour
@@ -333,11 +340,11 @@ def registrar_evento_postagem(plataforma):
         logger.error(f"Erro ao registrar evento de interacao: {e}")
 
 def ajustar_fila_ao_iniciar():
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
     
     agora = datetime.datetime.now()
-    cursor.execute("SELECT id, data_agendamento FROM fila_postagens ORDER BY id ASC")
+    cursor.execute("SELECT id, data_agendamento FROM fila_postagens WHERE status = 'pendente' ORDER BY id ASC")
     itens = cursor.fetchall()
     
     if not itens:
@@ -347,7 +354,6 @@ def ajustar_fila_ao_iniciar():
     proximo_horario = agora
     for item_id, _ in itens:
         proximo_horario += datetime.timedelta(minutes=INTERVALO_POSTAGEM_MINUTOS)
-        proximo_horario = garantir_janela_funcionamento(proximo_horario)
         novo_horario_str = proximo_horario.strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("UPDATE fila_postagens SET data_agendamento = ? WHERE id = ?", (novo_horario_str, item_id))
 
@@ -395,7 +401,7 @@ def identificar_plataforma(link):
         return 'geral'
 
 def incrementar_e_verificar_contador_plataforma(plataforma):
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute('SELECT contador FROM contadores_plataforma WHERE plataforma = ?', (plataforma,))
     row = cursor.fetchone()
@@ -449,29 +455,29 @@ def verificar_duplicidade(link):
     link_limpo = limpar_url_para_verificacao(link)
     hoje = datetime.date.today().isoformat()
     
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute('SELECT COUNT(*) FROM historico_links WHERE link_limpo = ? AND data_envio = ?', (link_limpo, hoje))
     count_hist = cursor.fetchone()[0]
     
-    cursor.execute('SELECT COUNT(*) FROM fila_postagens WHERE link LIKE ?', (f'%{link_limpo}%',))
+    cursor.execute('SELECT COUNT(*) FROM fila_postagens WHERE link LIKE ? AND status = ?', (f'%{link_limpo}%', 'pendente'))
     count_fila = cursor.fetchone()[0]
     
     conn.close()
     return (count_hist > 0 or count_fila > 0)
 
-def registrar_envio_historico(link, short_code=None, categoria=None):
+def registrar_envio_historico(link, short_code=None, categoria=None, titulo=None):
     link_limpo = limpar_url_para_verificacao(link)
     hoje = datetime.date.today().isoformat()
+    plataforma = identificar_plataforma(link)
     
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO historico_links (link_limpo, data_envio, short_code, categoria) VALUES (?, ?, ?, ?)',
-                   (link_limpo, hoje, short_code, categoria))
+    cursor.execute('INSERT INTO historico_links (link_limpo, data_envio, short_code, categoria, plataforma, titulo) VALUES (?, ?, ?, ?, ?, ?)',
+                   (link_limpo, hoje, short_code, categoria, plataforma, titulo))
     conn.commit()
     conn.close()
     
-    plataforma = identificar_plataforma(link)
     registrar_evento_postagem(plataforma)
     registrar_log_sistema("envio_historico", f"Link registrado no histórico: {link_limpo}")
 
@@ -479,16 +485,16 @@ def adicionar_fila(dados, link, texto_adicional, origem='manual', file_id_foto=N
     duplicado = verificar_duplicidade(link)
     data_agendamento = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute(
-        'INSERT INTO fila_postagens (dados_json, link, texto_adicional, data_agendamento, origem, file_id_foto) VALUES (?, ?, ?, ?, ?, ?)',
-        (json.dumps(dados), link, texto_adicional, data_agendamento, origem, file_id_foto)
+        'INSERT INTO fila_postagens (dados_json, link, texto_adicional, data_agendamento, origem, file_id_foto, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        (json.dumps(dados), link, texto_adicional, data_agendamento, origem, file_id_foto, 'pendente')
     )
     conn.commit()
     novo_id = cursor.lastrowid
     
-    cursor.execute('SELECT COUNT(*) FROM fila_postagens')
+    cursor.execute('SELECT COUNT(*) FROM fila_postagens WHERE status = ?', ('pendente',))
     total_fila = cursor.fetchone()[0]
     conn.close()
     
@@ -496,11 +502,17 @@ def adicionar_fila(dados, link, texto_adicional, origem='manual', file_id_foto=N
     return total_fila, duplicado, novo_id
 
 def proximo_da_fila():
-    """Pega o próximo item da fila e já remove ele (para evitar repetição)"""
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    """Pega o próximo item da fila e remove da fila de pendentes"""
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
     
-    cursor.execute('SELECT id, dados_json, link, texto_adicional, origem, file_id_foto FROM fila_postagens ORDER BY id ASC LIMIT 1')
+    cursor.execute('''
+        SELECT id, dados_json, link, texto_adicional, origem, file_id_foto 
+        FROM fila_postagens 
+        WHERE status = 'pendente' 
+        ORDER BY id ASC 
+        LIMIT 1
+    ''')
     row = cursor.fetchone()
     
     if not row:
@@ -523,7 +535,7 @@ def proximo_da_fila():
     }
 
 def remover_da_fila(db_id):
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute('DELETE FROM fila_postagens WHERE id = ?', (db_id,))
     conn.commit()
@@ -531,25 +543,25 @@ def remover_da_fila(db_id):
     registrar_log_sistema("remover_fila", f"Item ID {db_id} removido da fila.")
 
 def limpar_toda_fila():
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
-    cursor.execute('DELETE FROM fila_postagens')
+    cursor.execute('DELETE FROM fila_postagens WHERE status = ?', ('pendente',))
     conn.commit()
     conn.close()
     registrar_log_sistema("limpar_fila", "Toda a fila de postagens foi zerada.")
 
 def contar_fila_atual():
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
-    cursor.execute('SELECT COUNT(*) FROM fila_postagens')
+    cursor.execute('SELECT COUNT(*) FROM fila_postagens WHERE status = ?', ('pendente',))
     total = cursor.fetchone()[0]
     conn.close()
     return total
 
 def obter_posicao_por_id(db_id):
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
-    cursor.execute('SELECT id FROM fila_postagens ORDER BY id ASC')
+    cursor.execute('SELECT id FROM fila_postagens WHERE status = ? ORDER BY id ASC', ('pendente',))
     rows = cursor.fetchall()
     conn.close()
     
@@ -559,9 +571,9 @@ def obter_posicao_por_id(db_id):
     return len(rows)
 
 def obter_item_por_posicao(posicao):
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
-    cursor.execute('SELECT id, dados_json, link, texto_adicional, origem, file_id_foto FROM fila_postagens ORDER BY id ASC')
+    cursor.execute('SELECT id, dados_json, link, texto_adicional, origem, file_id_foto FROM fila_postagens WHERE status = ? ORDER BY id ASC', ('pendente',))
     rows = cursor.fetchall()
     conn.close()
     
@@ -571,7 +583,7 @@ def obter_item_por_posicao(posicao):
     return None
 
 def atualizar_item_banco(db_id, dados, link, texto_adicional):
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute(
         'UPDATE fila_postagens SET dados_json = ?, link = ?, texto_adicional = ? WHERE id = ?',
@@ -583,7 +595,7 @@ def atualizar_item_banco(db_id, dados, link, texto_adicional):
 
 def contar_historico_hoje():
     hoje = datetime.date.today().isoformat()
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute('SELECT COUNT(*) FROM historico_links WHERE data_envio = ?', (hoje,))
     total = cursor.fetchone()[0]
@@ -591,7 +603,7 @@ def contar_historico_hoje():
     return total
 
 def obter_logs_recentes(limite=10):
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute('SELECT tipo, detalhes, data_hora FROM log_operacoes ORDER BY id DESC LIMIT ?', (limite,))
     rows = cursor.fetchall()
@@ -600,7 +612,7 @@ def obter_logs_recentes(limite=10):
 
 def obter_ranking_plataformas_horario_atual():
     hora_atual = datetime.datetime.now().hour
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -633,9 +645,9 @@ def extrair_id_ou_chave_produto(row_item):
         return str(row_item[0])
 
 def reordenar_fila_blocos_de_3():
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
-    cursor.execute('SELECT id, dados_json, link, texto_adicional, origem, file_id_foto FROM fila_postagens ORDER BY id ASC')
+    cursor.execute('SELECT id, dados_json, link, texto_adicional, origem, file_id_foto FROM fila_postagens WHERE status = ? ORDER BY id ASC', ('pendente',))
     rows = cursor.fetchall()
     
     if not rows:
@@ -692,20 +704,17 @@ def reordenar_fila_blocos_de_3():
         for idx in reversed(para_remover):
             del filas_ativas[idx]
 
-    cursor.execute('DELETE FROM fila_postagens')
+    cursor.execute('DELETE FROM fila_postagens WHERE status = ?', ('pendente',))
     
-    agora = datetime.datetime.now()
     for item in novos_itens_ordenados:
         _, dados_json, link, texto_adicional, origem, file_id_foto = item
-        data_agendamento = agora.strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute(
-            'INSERT INTO fila_postagens (dados_json, link, texto_adicional, data_agendamento, origem, file_id_foto) VALUES (?, ?, ?, ?, ?, ?)',
-            (dados_json, link, texto_adicional, data_agendamento, origem, file_id_foto)
+            'INSERT INTO fila_postagens (dados_json, link, texto_adicional, origem, file_id_foto, status) VALUES (?, ?, ?, ?, ?, ?)',
+            (dados_json, link, texto_adicional, origem, file_id_foto, 'pendente')
         )
 
     conn.commit()
     conn.close()
-    ajustar_fila_ao_iniciar()
     
     registrar_log_sistema("organizar_fila", f"{len(novos_itens_ordenados)} itens reorganizados por categoria em blocos de 3 com diversidade.")
     return len(novos_itens_ordenados)
@@ -898,7 +907,7 @@ CUPONS_GERAIS = [
 
 def obter_opcao_sem_repetir_no_dia(categoria, lista_opcoes):
     hoje = datetime.date.today().isoformat()
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
     
     cursor.execute(
@@ -1377,20 +1386,23 @@ async def enviar_para_grupo_promos(context, dados, link, texto_adicional="", ori
                     caption=mensagem, 
                     parse_mode='HTML'
                 )
-                registrar_envio_historico(link)
-                ULTIMO_ENVIO_TIMESTAMP = datetime.datetime.now()
-                salvar_ultimo_timestamp(ULTIMO_ENVIO_TIMESTAMP)
-                return True
             except Exception as e_file:
                 logger.error(f"Erro ao enviar com file_id do telegram: {e_file}")
+                await context.bot.send_message(
+                    chat_id=GRUPO_PROMOS_ID, 
+                    text=mensagem, 
+                    parse_mode='HTML', 
+                    disable_web_page_preview=False
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=GRUPO_PROMOS_ID, 
+                text=mensagem, 
+                parse_mode='HTML', 
+                disable_web_page_preview=False
+            )
         
-        await context.bot.send_message(
-            chat_id=GRUPO_PROMOS_ID, 
-            text=mensagem, 
-            parse_mode='HTML', 
-            disable_web_page_preview=False
-        )
-        registrar_envio_historico(link)
+        registrar_envio_historico(link, short_code=None, categoria=identificar_categoria(dados.get('titulo', '')), titulo=dados.get('titulo', ''))
         ULTIMO_ENVIO_TIMESTAMP = datetime.datetime.now()
         salvar_ultimo_timestamp(ULTIMO_ENVIO_TIMESTAMP)
         return True
@@ -1398,33 +1410,27 @@ async def enviar_para_grupo_promos(context, dados, link, texto_adicional="", ori
         logger.error(f"Erro envio final: {e}")
         return False
 
-# --- CONTROLE COM JANELA 07:15 - 23:30 E INTERVALO DE 8 MINUTOS ---
+# --- CONTROLE COM INTERVALO RIGOROSO DE 8 MINUTOS CORRIGIDO ---
 async def processador_fila_background(context: ContextTypes.DEFAULT_TYPE):
     global ULTIMO_ENVIO_TIMESTAMP, BOT_PAUSADO
     
     if BOT_PAUSADO:
         return
 
-    agora = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-3)))
-    hora_atual_minutos = agora.hour * 60 + agora.minute
+    # Garante a contagem exata em segundos do intervalo de 8 minutos
+    agora = datetime.datetime.now()
+    intervalo_segundos = INTERVALO_POSTAGEM_MINUTOS * 60
+    tempo_desde_ultimo = (agora - ULTIMO_ENVIO_TIMESTAMP).total_seconds()
     
-    inicio_janela = 7 * 60 + 15
-    fim_janela = 23 * 60 + 30
-    
-    if not (inicio_janela <= hora_atual_minutos <= fim_janela):
+    if tempo_desde_ultimo < intervalo_segundos:
+        faltam = int(intervalo_segundos - tempo_desde_ultimo)
+        logger.info(f"Aguardando intervalo de 8 min: faltam {faltam}s ({faltam // 60}m {faltam % 60}s)")
         return
 
     total_fila = contar_fila_atual()
     if total_fila == 0:
         return
-    
-    # 🔥 VERIFICA O INTERVALO DE 8 MINUTOS (480 segundos)
-    tempo_desde_ultimo = (datetime.datetime.now() - ULTIMO_ENVIO_TIMESTAMP).total_seconds()
-    if tempo_desde_ultimo < (INTERVALO_POSTAGEM_MINUTOS * 60):
-        logger.info(f"Aguardando intervalo: {int((INTERVALO_POSTAGEM_MINUTOS * 60 - tempo_desde_ultimo))}s restantes")
-        return
 
-    # Pega o próximo item (já remove da fila automaticamente)
     item = proximo_da_fila()
     if item:
         dados = item['dados']
@@ -1436,29 +1442,124 @@ async def processador_fila_background(context: ContextTypes.DEFAULT_TYPE):
         sucesso = await enviar_para_grupo_promos(context, dados, link, texto_adicional, origem, file_id_foto)
         if sucesso:
             logger.info(f"✅ Postagem enviada com sucesso! Próxima em {INTERVALO_POSTAGEM_MINUTOS} minutos.")
+        else:
+            conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
+            cursor = conn.cursor()
+            cursor.execute(
+                'INSERT INTO fila_postagens (dados_json, link, texto_adicional, origem, file_id_foto, status) VALUES (?, ?, ?, ?, ?, ?)',
+                (json.dumps(dados), link, texto_adicional, origem, file_id_foto, 'pendente')
+            )
+            conn.commit()
+            conn.close()
+            logger.warning("⚠️ Falha no envio, item retornado à fila.")
 
 def calcular_horario_publicacao(ordem_na_data):
-    agora = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-3)))
-    hora_atual_minutos = agora.hour * 60 + agora.minute
-    
-    inicio_janela = 7 * 60 + 15
-    
-    if hora_atual_minutos < inicio_janela:
-        base_minutos = inicio_janela
-    else:
-        base_minutos = hora_atual_minutos + INTERVALO_POSTAGEM_MINUTOS
-        
-    minutos_totais = base_minutos + ((ordem_na_data - 1) * INTERVALO_POSTAGEM_MINUTOS)
-    
-    fim_janela = 23 * 60 + 30
-    if minutos_totais > fim_janela:
-        minutos_totais = fim_janela
-        
-    h = (minutos_totais // 60) % 24
-    m = minutos_totais % 60
-    return f"{h:02d}:{m:02d}"
+    agora = datetime.datetime.now()
+    minutos_totais = agora.minute + (ordem_na_data * INTERVALO_POSTAGEM_MINUTOS)
+    horas_extra = minutos_totais // 60
+    minutos_final = minutos_totais % 60
+    hora_final = (agora.hour + horas_extra) % 24
+    return f"{hora_final:02d}:{minutos_final:02d}"
 
 # --- COMANDOS ---
+
+async def relatorio_completo_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GRUPO_RASCUNHO_ID:
+        return
+
+    try:
+        dados_cliques = None
+        try:
+            response = requests.get(f'{TRACKING_SERVER}/api/estatisticas', timeout=10)
+            if response.status_code == 200:
+                dados_cliques = response.json()
+        except:
+            pass
+
+        conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
+        cursor = conn.cursor()
+        cursor.execute('SELECT id, dados_json, link, origem FROM fila_postagens WHERE status = ? ORDER BY id ASC', ('pendente',))
+        rows = cursor.fetchall()
+        total_na_fila = len(rows)
+
+        total_enviados_hoje = contar_historico_hoje()
+        
+        total_cliques = 0
+        cliques_hoje = 0
+        produto_top = "Nenhum"
+        cliques_por_plataforma = []
+        
+        if dados_cliques:
+            total_cliques = dados_cliques.get('total_cliques', 0)
+            cliques_hoje = dados_cliques.get('cliques_hoje', 0)
+            if dados_cliques.get('produto_mais_clicado'):
+                produto_top = dados_cliques['produto_mais_clicado'][0][:35] if dados_cliques['produto_mais_clicado'] else "Nenhum"
+            cliques_por_plataforma = dados_cliques.get('cliques_plataforma', [])
+
+        conn_metrics = sqlite3.connect(DB_METRICS_PATH, timeout=30.0)
+        cursor_metrics = conn_metrics.cursor()
+        
+        cursor_metrics.execute('SELECT COUNT(*) FROM cliques_detalhados')
+        total_cliques_rastreados = cursor_metrics.fetchone()[0] or 0
+        
+        cursor_metrics.execute('''
+            SELECT titulo_produto, COUNT(*) as total
+            FROM cliques_detalhados
+            GROUP BY titulo_produto
+            ORDER BY total DESC
+            LIMIT 1
+        ''')
+        produto_top_metrics = cursor_metrics.fetchone()
+        
+        conn_metrics.close()
+        conn.close()
+
+        status_bot = "⏸️ Pausado" if BOT_PAUSADO else "▶️ Em Execução"
+
+        relatorio_msg = (
+            "📈 <b>RELATÓRIO COMPLETO DE PERFORMANCE</b>\n"
+            "──────────────────────────────────────────\n\n"
+            f"🤖 <b>Status dos Disparos:</b> {status_bot}\n"
+            f"📅 <b>Data:</b> {datetime.date.today().strftime('%d/%m/%Y')}\n"
+            f"⏱️ <b>Último envio:</b> {ULTIMO_ENVIO_TIMESTAMP.strftime('%H:%M:%S')}\n"
+            f"⏰ <b>Próximo envio em:</b> {INTERVALO_POSTAGEM_MINUTOS} minutos\n\n"
+        )
+
+        relatorio_msg += (
+            "📦 <b>VOLUMETRIA</b>\n"
+            f"• Enviados Hoje: <b>{total_enviados_hoje}</b>\n"
+            f"• Aguardando Fila: <b>{total_na_fila}</b>\n\n"
+        )
+
+        if total_cliques > 0 or total_cliques_rastreados > 0:
+            relatorio_msg += (
+                "🖱️ <b>MÉTRICAS DE CLIQUES</b>\n"
+                f"• Total de Cliques: <b>{total_cliques}</b>\n"
+                f"• Cliques Hoje: <b>{cliques_hoje}</b>\n"
+            )
+            
+            if produto_top_metrics:
+                relatorio_msg += f"• 🏆 Produto Mais Clicado: <b>{html.escape(produto_top_metrics[0][:40])}</b> ({produto_top_metrics[1]} cliques)\n"
+            
+            if cliques_por_plataforma:
+                relatorio_msg += "\n📊 <b>Cliques por Plataforma:</b>\n"
+                for plat, qtd in cliques_por_plataforma[:5]:
+                    relatorio_msg += f"  • {plat.upper()}: {qtd} cliques\n"
+            
+            relatorio_msg += "\n"
+
+        relatorio_msg += (
+            "──────────────────────────────────────────\n"
+            f"⏰ <b>Intervalo entre postagens:</b> {INTERVALO_POSTAGEM_MINUTOS} minutos\n"
+            "💡 <i>Use /comandos para ver todas as opções</i>"
+        )
+
+        await update.message.reply_text(relatorio_msg, parse_mode='HTML')
+
+    except Exception as e:
+        logger.error(f"Erro no relatorio: {e}")
+        await update.message.reply_text(f"❌ Erro ao gerar relatório: {str(e)}", parse_mode='HTML')
+
 async def organizar_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GRUPO_RASCUNHO_ID:
         return
@@ -1471,535 +1572,23 @@ async def organizar_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚙️ <b>Analisando inteligência e reorganizando a fila em blocos de 3 com diversidade de produtos...</b>", parse_mode='HTML')
     
     total_processado = reordenar_fila_blocos_de_3()
-    hora_atual = datetime.datetime.now().hour
     
     msg_sucesso = (
         f"✅ <b>FILA REORGANIZADA COM SUCESSO!</b>\n\n"
         f"📊 Total de itens organizados: <b>{total_processado}</b>\n"
-        f"🕒 Faixa Horária de Referência: <b>{hora_atual:02d}:00h</b>\n"
         f"🧠 <b>Estratégia Aplicada:</b> Produtos agrupados em blocos de 3 por categoria/plataforma sem repetir o mesmo produto em sequência.\n\n"
         f"💡 <i>Use <code>/fila</code> para visualizar a nova sequência organizada!</i>"
     )
     
     await update.message.reply_text(msg_sucesso, parse_mode='HTML')
 
-def buscar_dados_cliques():
-    try:
-        response = requests.get(f'{TRACKING_SERVER}/api/estatisticas', timeout=10)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            logger.error(f"Erro ao buscar estatísticas: {response.text}")
-            return None
-    except Exception as e:
-        logger.error(f"Erro ao buscar dados de cliques: {e}")
-        return None
-
-def analisar_horarios_pico():
-    conn = sqlite3.connect(DB_METRICS_PATH, timeout=30.0)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        SELECT hora_dia, COUNT(*) as total
-        FROM cliques_detalhados
-        GROUP BY hora_dia
-        ORDER BY total DESC
-        LIMIT 5
-    ''')
-    melhores_horarios = cursor.fetchall()
-    
-    cursor.execute('''
-        SELECT hora_dia, COUNT(*) as total
-        FROM cliques_detalhados
-        GROUP BY hora_dia
-        ORDER BY total ASC
-        LIMIT 3
-    ''')
-    piores_horarios = cursor.fetchall()
-    
-    conn.close()
-    
-    return {
-        'melhores': melhores_horarios,
-        'piores': piores_horarios
-    }
-
-def analisar_performance_categoria():
-    conn = sqlite3.connect(DB_METRICS_PATH, timeout=30.0)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        SELECT categoria, 
-               COUNT(*) as total_cliques,
-               AVG(desconto_percentual) as media_desconto
-        FROM cliques_detalhados
-        GROUP BY categoria
-        ORDER BY total_cliques DESC
-    ''')
-    resultados = cursor.fetchall()
-    
-    conn2 = sqlite3.connect('promos_fila.db', timeout=30.0)
-    cursor2 = conn2.cursor()
-    
-    dados_completos = []
-    for cat, cliques, media_desc in resultados:
-        cursor2.execute('''
-            SELECT COUNT(*) FROM historico_links 
-            WHERE categoria = ? AND data_envio >= date('now', '-30 days')
-        ''', (cat,))
-        postagens = cursor2.fetchone()[0] or 1
-        
-        taxa_clique = round((cliques / postagens) * 100, 1) if postagens > 0 else 0
-        
-        dados_completos.append({
-            'categoria': cat,
-            'cliques': cliques,
-            'postagens': postagens,
-            'taxa_clique': taxa_clique,
-            'media_desconto': round(media_desc or 0, 1)
-        })
-    
-    conn2.close()
-    conn.close()
-    
-    return dados_completos
-
-def analisar_correlacao_desconto():
-    conn = sqlite3.connect(DB_METRICS_PATH, timeout=30.0)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        SELECT 
-            CASE 
-                WHEN desconto_percentual <= 10 THEN '0-10%'
-                WHEN desconto_percentual <= 20 THEN '11-20%'
-                WHEN desconto_percentual <= 30 THEN '21-30%'
-                WHEN desconto_percentual <= 40 THEN '31-40%'
-                WHEN desconto_percentual <= 50 THEN '41-50%'
-                ELSE '50%+'
-            END as faixa_desconto,
-            COUNT(*) as total_cliques,
-            AVG(desconto_percentual) as media_faixa
-        FROM cliques_detalhados
-        WHERE desconto_percentual > 0
-        GROUP BY faixa_desconto
-        ORDER BY media_faixa
-    ''')
-    resultados = cursor.fetchall()
-    
-    conn.close()
-    return resultados
-
-def gerar_insights_ia():
-    insights = []
-    
-    horarios = analisar_horarios_pico()
-    if horarios['melhores']:
-        melhor_hora = horarios['melhores'][0]
-        insights.append({
-            'tipo': 'horario_pico',
-            'mensagem': f"📈 <b>Horário de Pico:</b> As {melhor_hora[0]:02d}:00 geram em média {melhor_hora[1]} cliques. Considere agendar postagens para esse horário!",
-            'prioridade': 2
-        })
-    
-    categorias = analisar_performance_categoria()
-    if categorias:
-        melhor_cat = categorias[0]
-        insights.append({
-            'tipo': 'categoria_top',
-            'mensagem': f"🏆 <b>Categoria Destaque:</b> '{melhor_cat['categoria']}' tem {melhor_cat['cliques']} cliques com taxa de {melhor_cat['taxa_clique']}%. Invista mais nesse nicho!",
-            'prioridade': 1
-        })
-        
-        if len(categorias) > 1:
-            pior_cat = categorias[-1]
-            if pior_cat['taxa_clique'] < (melhor_cat['taxa_clique'] * 0.3):
-                insights.append({
-                    'tipo': 'alerta_queda',
-                    'mensagem': f"⚠️ <b>Atenção:</b> A categoria '{pior_cat['categoria']}' está com apenas {pior_cat['taxa_clique']}% de taxa de clique. Considere reduzir postagens neste nicho.",
-                    'prioridade': 2
-                })
-    
-    descontos = analisar_correlacao_desconto()
-    if descontos:
-        melhor_faixa = max(descontos, key=lambda x: x[1])
-        insights.append({
-            'tipo': 'desconto_ideal',
-            'mensagem': f"💰 <b>Desconto Ideal:</b> A faixa de {melhor_faixa[0]} gera {melhor_faixa[1]} cliques. Essa é a faixa mais atrativa para seu público!",
-            'prioridade': 1
-        })
-    
-    conn = sqlite3.connect(DB_METRICS_PATH, timeout=30.0)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        SELECT plataforma, COUNT(*) as total
-        FROM cliques_detalhados
-        WHERE data_clique >= date('now', '-7 days')
-        GROUP BY plataforma
-        ORDER BY total DESC
-    ''')
-    ultimos_7 = {row[0]: row[1] for row in cursor.fetchall()}
-    
-    cursor.execute('''
-        SELECT plataforma, COUNT(*) as total
-        FROM cliques_detalhados
-        WHERE data_clique >= date('now', '-30 days')
-        GROUP BY plataforma
-        ORDER BY total DESC
-    ''')
-    ultimos_30 = {row[0]: row[1] for row in cursor.fetchall()}
-    
-    conn.close()
-    
-    for plat in ultimos_30:
-        if plat in ultimos_7:
-            semanal = ultimos_7[plat]
-            media_diaria_30 = ultimos_30[plat] / 30
-            media_diaria_7 = semanal / 7
-            
-            if media_diaria_7 < media_diaria_30 * 0.8:
-                insights.append({
-                    'tipo': 'tendencia_queda',
-                    'mensagem': f"📉 <b>Tendência de Queda:</b> Cliques em {plat.upper()} caíram {round((1 - media_diaria_7/media_diaria_30) * 100)}% nos últimos 7 dias. Investigue a causa!",
-                    'prioridade': 3
-                })
-            elif media_diaria_7 > media_diaria_30 * 1.2:
-                insights.append({
-                    'tipo': 'tendencia_alta',
-                    'mensagem': f"📈 <b>Tendência de Alta:</b> Cliques em {plat.upper()} aumentaram {round((media_diaria_7/media_diaria_30 - 1) * 100)}% nos últimos 7 dias. Aproveite o momento!",
-                    'prioridade': 2
-                })
-    
-    insights.sort(key=lambda x: x['prioridade'])
-    
-    return insights
-
-async def relatorio_completo_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != GRUPO_RASCUNHO_ID:
-        return
-
-    dados_cliques = buscar_dados_cliques()
-    
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
-    cursor = conn.cursor()
-    cursor.execute('SELECT id, dados_json, link, origem FROM fila_postagens ORDER BY id ASC')
-    rows = cursor.fetchall()
-
-    cursor.execute('SELECT produto_titulo, plataforma, total_cliques, data_ultimo_clique FROM cliques_links ORDER BY total_cliques DESC')
-    cliques_registrados = cursor.fetchall()
-    
-    conn_metrics = sqlite3.connect(DB_METRICS_PATH, timeout=30.0)
-    cursor_metrics = conn_metrics.cursor()
-    
-    cursor_metrics.execute('SELECT COUNT(*) FROM cliques_detalhados')
-    total_cliques_rastreados = cursor_metrics.fetchone()[0] or 0
-    
-    cursor_metrics.execute('''
-        SELECT plataforma, COUNT(*) as total
-        FROM cliques_detalhados
-        GROUP BY plataforma
-        ORDER BY total DESC
-    ''')
-    cliques_por_plataforma = cursor_metrics.fetchall()
-    
-    cursor_metrics.execute('''
-        SELECT titulo_produto, COUNT(*) as total
-        FROM cliques_detalhados
-        GROUP BY titulo_produto
-        ORDER BY total DESC
-        LIMIT 1
-    ''')
-    produto_top = cursor_metrics.fetchone()
-    
-    cursor_metrics.execute('''
-        SELECT categoria, COUNT(*) as total, AVG(desconto_percentual) as media_desc
-        FROM cliques_detalhados
-        GROUP BY categoria
-        ORDER BY total DESC
-    ''')
-    cliques_por_categoria = cursor_metrics.fetchall()
-    
-    cursor_metrics.execute('SELECT COUNT(*) FROM historico_links WHERE data_envio >= date("now", "-30 days")')
-    total_postagens_30d = cursor_metrics.fetchone()[0] or 1
-    
-    cursor_metrics.execute('SELECT AVG(desconto_percentual) FROM cliques_detalhados')
-    media_desconto_cliques = cursor_metrics.fetchone()[0] or 0
-    
-    cursor_metrics.execute('SELECT AVG(desconto_percentual) FROM metricas_envio WHERE data_envio >= date("now", "-30 days")')
-    media_desconto_postagens = cursor_metrics.fetchone()[0] or 0
-    
-    conn_metrics.close()
-    conn.close()
-
-    total_enviados_hoje = contar_historico_hoje()
-    total_na_fila = len(rows)
-    status_bot = "⏸️ Pausado" if BOT_PAUSADO else "▶️ Em Execução"
-
-    total_cliques_geral = sum(c[2] for c in cliques_registrados) if cliques_registrados else 0
-    prod_mais_clicado_nome = cliques_registrados[0][0] if cliques_registrados else "Nenhum"
-    prod_mais_clicado_qtd = cliques_registrados[0][2] if cliques_registrados else 0
-
-    contagem_cliques_plat = Counter()
-    for _, plat, qtd, _ in cliques_registrados:
-        contagem_cliques_plat[plat.upper()] += qtd
-
-    plat_top_nome = contagem_cliques_plat.most_common(1)[0][0] if contagem_cliques_plat else "Nenhuma"
-    plat_top_qtd = contagem_cliques_plat.most_common(1)[0][1] if contagem_cliques_plat else 0
-
-    contagem_plataformas = {}
-    origem_garimpo = 0
-    origem_manual = 0
-    itens_com_pendencia = 0
-    soma_descontos_perc = 0
-    total_com_desconto = 0
-
-    for idx, row in enumerate(rows, 1):
-        try:
-            dados = json.loads(row[1])
-        except:
-            dados = {}
-
-        link = row[2]
-        origem = row[3]
-
-        plat = identificar_plataforma(link).upper()
-        contagem_plataformas[plat] = contagem_plataformas.get(plat, 0) + 1
-
-        if origem == 'garimpo':
-            origem_garimpo += 1
-        else:
-            origem_manual += 1
-
-        p_desc = dados.get('preco_desconto')
-        p_orig = dados.get('preco_original')
-        titulo = dados.get('titulo', '')
-
-        if not p_desc or p_desc <= 1 or not titulo or titulo == "Produto em Oferta Especial":
-            itens_com_pendencia += 1
-
-        if p_orig and p_desc and p_orig > p_desc:
-            desc_perc = ((p_orig - p_desc) / p_orig) * 100
-            soma_descontos_perc += desc_perc
-            total_com_desconto += 1
-
-    media_desconto = round(soma_descontos_perc / total_com_desconto) if total_com_desconto > 0 else 0
-    primeira_postagem = calcular_horario_publicacao(1) if total_na_fila > 0 else "N/A"
-    ultima_postagem = calcular_horario_publicacao(total_na_fila) if total_na_fila > 0 else "N/A"
-
-    horarios_pico = analisar_horarios_pico()
-    performance_categoria = analisar_performance_categoria()
-    correlacao_desconto = analisar_correlacao_desconto()
-    insights = gerar_insights_ia()
-
-    relatorio_msg = (
-        "📈 <b>RELATÓRIO COMPLETO DE PERFORMANCE E BI</b>\n"
-        "──────────────────────────────────────────\n\n"
-        f"🤖 <b>Status dos Disparos:</b> {status_bot}\n"
-        f"📅 <b>Data:</b> {datetime.date.today().strftime('%d/%m/%Y')}\n\n"
-
-        "🖱️ <b>MÉTRICAS DE CLIQUES E PERFORMANCE</b>\n"
-        f"🎯 <b>Total de Cliques Registrados:</b> <code>{total_cliques_rastreados}</code>\n"
-        f"📦 <b>Postagens (últimos 30 dias):</b> <code>{total_postagens_30d}</code>\n"
-        f"📊 <b>Taxa de Clique por Postagem:</b> <code>{round(total_cliques_rastreados/total_postagens_30d, 2)}</code>\n"
-        f"🏆 <b>Produto Mais Clicado:</b>\n• {html.escape(produto_top[0][:40]) if produto_top else 'Nenhum'} ({produto_top[1] if produto_top else 0} cliques)\n"
-        f"🛒 <b>Plataforma Campeã de Cliques:</b>\n• {plat_top_nome} ({plat_top_qtd} cliques)\n\n"
-    )
-
-    if performance_categoria:
-        relatorio_msg += "🏷️ <b>PERFORMANCE POR CATEGORIA</b>\n"
-        for cat in performance_categoria[:5]:
-            relatorio_msg += (
-                f"• <code>{cat['categoria'].upper()}</code>: {cat['cliques']} cliques "
-                f"(Taxa: {cat['taxa_clique']}% | Desc: {cat['media_desconto']}%)\n"
-            )
-        relatorio_msg += "\n"
-
-    if cliques_por_plataforma:
-        total_cliques_plat = sum(c[1] for c in cliques_por_plataforma)
-        relatorio_msg += "🔄 <b>SHARE OF CLICKS POR PLATAFORMA</b>\n"
-        for plat, qtd in cliques_por_plataforma[:5]:
-            perc = (qtd / total_cliques_plat) * 100 if total_cliques_plat > 0 else 0
-            relatorio_msg += f"• <code>{plat.upper()}</code>: {qtd} cliques ({perc:.1f}%)\n"
-        relatorio_msg += "\n"
-
-    if horarios_pico['melhores']:
-        relatorio_msg += "🕐 <b>TOP 3 HORÁRIOS DE PICO</b>\n"
-        for hora, qtd in horarios_pico['melhores'][:3]:
-            relatorio_msg += f"• <b>{hora:02d}:00</b> → {qtd} cliques\n"
-        
-        if horarios_pico['piores']:
-            relatorio_msg += "\n⏳ <b>HORÁRIOS COM MENOS CLIQUE</b>\n"
-            for hora, qtd in horarios_pico['piores'][:3]:
-                relatorio_msg += f"• <b>{hora:02d}:00</b> → {qtd} cliques\n"
-        relatorio_msg += "\n"
-
-    if correlacao_desconto:
-        relatorio_msg += "📊 <b>EFICIÊNCIA DO DESCONTO VS CLIQUE</b>\n"
-        for faixa, qtd, media in correlacao_desconto:
-            relatorio_msg += f"• Faixa <b>{faixa}</b>: {qtd} cliques (Média: {round(media)}% OFF)\n"
-        relatorio_msg += "\n"
-
-    if insights:
-        relatorio_msg += "🧠 <b>INSIGHTS DA IA</b>\n"
-        relatorio_msg += "───────────────────────────────\n"
-        for insight in insights[:6]:
-            relatorio_msg += f"{insight['mensagem']}\n"
-        relatorio_msg += "\n"
-
-    relatorio_msg += (
-        "📦 <b>VOLUMETRIA E OPERAÇÃO HOJE</b>\n"
-        f"• Enviados Hoje: <b>{total_enviados_hoje}</b>\n"
-        f"• Aguardando Fila: <b>{total_na_fila}</b>\n"
-        f"• Média de Desconto Fila: <b>{media_desconto}% OFF</b>\n"
-        f"• Próxima Postagem: <b>{primeira_postagem}</b> | Término: <b>{ultima_postagem}</b>\n\n"
-        "──────────────────────────────────────────\n"
-        "💡 <i>Use /comandos para ver todas as opções</i>"
-    )
-
-    if len(relatorio_msg) > 4096:
-        parte1 = relatorio_msg[:3800]
-        parte2 = "📊 <b>Continuação do Relatório...</b>\n\n" + relatorio_msg[3800:]
-        await update.message.reply_text(parte1, parse_mode='HTML')
-        await update.message.reply_text(parte2, parse_mode='HTML')
-    else:
-        await update.message.reply_text(relatorio_msg, parse_mode='HTML')
-
-async def horarios_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != GRUPO_RASCUNHO_ID:
-        return
-    
-    horarios = analisar_horarios_pico()
-    
-    msg = "🕐 <b>ANÁLISE DE HORÁRIOS DE CLIQUES</b>\n"
-    msg += "───────────────────────────────\n\n"
-    
-    if horarios['melhores']:
-        msg += "📈 <b>Melhores Horários para Postar:</b>\n"
-        for hora, qtd in horarios['melhores'][:5]:
-            msg += f"• <b>{hora:02d}:00</b> → {qtd} cliques\n"
-    
-    msg += "\n"
-    
-    if horarios['piores']:
-        msg += "📉 <b>Horários com Menos Engajamento:</b>\n"
-        for hora, qtd in horarios['piores'][:3]:
-            msg += f"• <b>{hora:02d}:00</b> → {qtd} cliques\n"
-    
-    msg += "\n💡 <i>Considere agendar suas postagens nos horários de pico para maximizar o engajamento!</i>"
-    
-    await update.message.reply_text(msg, parse_mode='HTML')
-
-async def categorias_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != GRUPO_RASCUNHO_ID:
-        return
-    
-    performance = analisar_performance_categoria()
-    
-    if not performance:
-        await update.message.reply_text("📊 Ainda não há dados suficientes para análise de categorias.", parse_mode='HTML')
-        return
-    
-    msg = "🏷️ <b>PERFORMANCE POR CATEGORIA</b>\n"
-    msg += "───────────────────────────────\n\n"
-    
-    for idx, cat in enumerate(performance, 1):
-        emoji = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else "📌"
-        msg += (
-            f"{emoji} <b>{cat['categoria'].upper()}</b>\n"
-            f"   • Cliques: {cat['cliques']}\n"
-            f"   • Postagens: {cat['postagens']}\n"
-            f"   • Taxa de Clique: {cat['taxa_clique']}%\n"
-            f"   • Média de Desconto: {cat['media_desconto']}%\n\n"
-        )
-    
-    msg += "💡 <i>Invista mais nas categorias com melhor taxa de clique!</i>"
-    
-    await update.message.reply_text(msg, parse_mode='HTML')
-
-async def prever_item_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != GRUPO_RASCUNHO_ID:
-        return
-    args = context.args
-    if not args:
-        await update.message.reply_text("⚠️ Use o formato correto: <code>/prever 1</code>", parse_mode='HTML')
-        return
-    try:
-        posicao = int(args[0])
-    except ValueError:
-        await update.message.reply_text("❌ Número de posição inválido.")
-        return
-        
-    item = obter_item_por_posicao(posicao)
-    if not item:
-        await update.message.reply_text(f"❌ Não foi encontrado nenhum item na {posicao}ª posição da fila.")
-        return
-        
-    dados = item['dados']
-    link = item['link']
-    texto_adicional = item['texto_adicional']
-    origem = item['origem']
-    file_id_foto = item['file_id_foto']
-    
-    mensagem_preview = montar_layout_mensagem(dados, link, texto_adicional, origem)
-    
-    await update.message.reply_text(
-        f"🔍 <b>PRÉVIA DA {posicao}ª POSIÇÃO DA FILA:</b>\n"
-        f"----------------------------------------",
-        parse_mode='HTML'
-    )
-    
-    try:
-        if file_id_foto:
-            await update.message.reply_photo(photo=file_id_foto, caption=mensagem_preview, parse_mode='HTML')
-            return
-    except Exception as e:
-        logger.error(f"Erro ao enviar foto na prévia: {e}")
-        
-    await update.message.reply_text(text=mensagem_preview, parse_mode='HTML')
-
-async def listar_comandos_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != GRUPO_RASCUNHO_ID:
-        return
-    
-    texto_ajuda = (
-        "📖 <b>GUIA DIDÁTICO E COMPLETO DE COMANDOS</b>\n"
-        "───────────────────────────────\n\n"
-        "📋 <b>Gerenciamento de Fila</b>\n"
-        "• <code>/fila</code> — Lista todas as postagens agendadas em ordem de envio.\n"
-        "• <code>/organizar</code> — Reorganiza a fila em blocos de 3 da mesma categoria e evita produtos iguais seguidos.\n"
-        "• <code>/refresh</code> — Atualiza a fila e os horários de forma silenciosa (retorna apenas 'ok').\n"
-        "• <code>/prever [posição]</code> — Exibe exatamente como a postagem vai aparecer no grupo (Ex: <code>/prever 1</code>).\n\n"
-
-        "✏️ <b>Edição e Ajustes Rápidos</b>\n"
-        "• <code>/personalizar [pos] [promo] [orig]</code> — Altera os preços de um item da fila (Ex: <code>/personalizar 1 49.90 89.90</code>).\n"
-        "• <code>/editar [posição]</code> — Troca o link de um produto agendado (Ex: <code>/editar 2</code>).\n"
-        "• <code>/remover [posição]</code> — Apaga um produto da fila (Ex: <code>/remover 3</code>).\n"
-        "• <code>/limparfila</code> — Zera totalmente a fila de postagens.\n\n"
-
-        "📊 <b>Métricas e Desempenho (BI)</b>\n"
-        "• <code>/relatorio</code> — Relatório completo com insights de IA e análises avançadas.\n"
-        "• <code>/horarios</code> — Mostra os melhores e piores horários para postar.\n"
-        "• <code>/categorias</code> — Performance detalhada por categoria de produto.\n"
-        "• <code>/resumo</code> — Resumo express do dia (enviados, na fila e status).\n"
-        "• <code>/cupom</code> — Assistente passo a passo para enviar cupons avulsos.\n\n"
-
-        "⚙️ <b>Controle do Bot</b>\n"
-        "• <code>/pausar</code> / <code>/retomar</code> — Interrompe ou reativa as postagens automáticas.\n"
-        "• <code>/destravar</code> — Força a publicação imediata do próximo item da fila.\n"
-        "• <code>/desbugar</code> — Reorganiza e alinha todos os horários da fila.\n"
-        "• <code>/logs</code> — Mostra os registros técnicos de funcionamento.\n"
-        "• <code>/cancelar</code> — Cancela qualquer operação interativa em andamento.\n"
-    )
-    await update.message.reply_text(texto_ajuda, parse_mode='HTML')
-
 async def ver_fila_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GRUPO_RASCUNHO_ID:
         return
     
-    conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
-    cursor.execute('SELECT id, dados_json, link, data_agendamento, origem FROM fila_postagens ORDER BY id ASC')
+    cursor.execute('SELECT id, dados_json, link, data_agendamento, origem FROM fila_postagens WHERE status = ? ORDER BY id ASC', ('pendente',))
     rows = cursor.fetchall()
     conn.close()
     
@@ -2062,7 +1651,6 @@ async def ver_fila_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def refresh_fila_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GRUPO_RASCUNHO_ID:
         return
-    ajustar_fila_ao_iniciar()
     await update.message.reply_text("ok")
 
 async def remover_item_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2083,7 +1671,12 @@ async def remover_item_comando(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"❌ Nenhum item na {posicao}ª posição.")
         return
         
-    remover_da_fila(item['db_id'])
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM fila_postagens WHERE id = ?', (item['db_id'],))
+    conn.commit()
+    conn.close()
+    
     restantes = contar_fila_atual()
     await update.message.reply_text(f"🗑️ Item removido! Restantes na fila: <b>{restantes}</b>", parse_mode='HTML')
 
@@ -2094,7 +1687,13 @@ async def limpar_fila_comando(update: Update, context: ContextTypes.DEFAULT_TYPE
     if total_antes == 0:
         await update.message.reply_text("📦 A fila já está vazia!", parse_mode='HTML')
         return
-    limpar_toda_fila()
+    
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM fila_postagens WHERE status = ?', ('pendente',))
+    conn.commit()
+    conn.close()
+    
     await update.message.reply_text(f"🧹 Toda a fila foi limpa! Total de <b>{total_antes}</b> itens removidos.", parse_mode='HTML')
 
 async def pausar_bot_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2116,9 +1715,11 @@ async def retomar_bot_comando(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def desbugar_fila_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GRUPO_RASCUNHO_ID:
         return
-    ajustar_fila_ao_iniciar()
-    registrar_log_sistema("desbugar", "Varredura e reajuste de fila solicitados.")
-    await update.message.reply_text("🛠️ Varredura concluída com sucesso! Horários alinhados.", parse_mode='HTML')
+    global ULTIMO_ENVIO_TIMESTAMP
+    ULTIMO_ENVIO_TIMESTAMP = datetime.datetime.min
+    salvar_ultimo_timestamp(ULTIMO_ENVIO_TIMESTAMP)
+    registrar_log_sistema("desbugar", "Timestamp resetado para forçar novo envio.")
+    await update.message.reply_text("🛠️ Bot debugado! Próximo envio será imediato.", parse_mode='HTML')
 
 async def ver_logs_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GRUPO_RASCUNHO_ID:
@@ -2284,9 +1885,9 @@ async def receber_precos_personalizar(update: Update, context: ContextTypes.DEFA
             context.user_data.clear()
             return ConversationHandler.END
 
-        conn = sqlite3.connect('promos_fila.db', timeout=30.0)
+        conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
         cursor = conn.cursor()
-        cursor.execute('SELECT id, dados_json, link, texto_adicional, origem, file_id_foto FROM fila_postagens WHERE id = ?', (db_id,))
+        cursor.execute('SELECT id, dados_json, link, texto_adicional, origem, file_id_foto FROM fila_postagens WHERE status = ? AND id = ?', ('pendente', db_id))
         row = cursor.fetchone()
         conn.close()
 
@@ -2319,18 +1920,12 @@ async def resumo_dia_comando(update: Update, context: ContextTypes.DEFAULT_TYPE)
     total_enviados_hoje = contar_historico_hoje()
     status_bot = "⏸️ Pausado" if BOT_PAUSADO else "▶️ Ativo"
     
-    conn = sqlite3.connect(DB_METRICS_PATH, timeout=30.0)
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM cliques_detalhados WHERE data_clique = date('now')")
-    cliques_hoje = cursor.fetchone()[0] or 0
-    conn.close()
-    
     resumo_texto = (
         f"📈 <b>RESUMO OPERACIONAL DO DIA</b>\n\n"
         f"⚙️ Status dos disparos: <b>{status_bot}</b>\n"
         f"✅ Publicados hoje: <b>{total_enviados_hoje}</b>\n"
-        f"🖱️ Cliques hoje: <b>{cliques_hoje}</b>\n"
-        f"📦 Na fila atualmente: <b>{total_fila}</b>\n\n"
+        f"📦 Na fila atualmente: <b>{total_fila}</b>\n"
+        f"⏰ Intervalo: <b>{INTERVALO_POSTAGEM_MINUTOS} minutos</b>\n\n"
         f"💡 <i>Dica: Para dados detalhados use <code>/relatorio</code></i>"
     )
     await update.message.reply_text(resumo_texto, parse_mode='HTML')
@@ -2338,15 +1933,83 @@ async def resumo_dia_comando(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def destravar_fila_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GRUPO_RASCUNHO_ID:
         return
-    item = proximo_da_fila()
-    if item:
-        sucesso = await enviar_para_grupo_promos(context, item['dados'], item['link'], item['texto_adicional'], item['origem'], item['file_id_foto'])
-        if sucesso:
-            await update.message.reply_text("🚀 Item disparado com sucesso!", parse_mode='HTML')
-        else:
-            await update.message.reply_text("❌ Falha ao tentar disparar o item da fila.", parse_mode='HTML')
-    else:
-        await update.message.reply_text("📦 A fila está vazia no momento, nada para destravar.", parse_mode='HTML')
+    
+    global ULTIMO_ENVIO_TIMESTAMP
+    ULTIMO_ENVIO_TIMESTAMP = datetime.datetime.min
+    salvar_ultimo_timestamp(ULTIMO_ENVIO_TIMESTAMP)
+    
+    await processador_fila_background(context)
+    await update.message.reply_text("🚀 Fila destravada! Verificando se há itens para enviar...", parse_mode='HTML')
+
+async def prever_item_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GRUPO_RASCUNHO_ID:
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("⚠️ Use o formato correto: <code>/prever 1</code>", parse_mode='HTML')
+        return
+    try:
+        posicao = int(args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Número de posição inválido.")
+        return
+        
+    item = obter_item_por_posicao(posicao)
+    if not item:
+        await update.message.reply_text(f"❌ Não foi encontrado nenhum item na {posicao}ª posição da fila.")
+        return
+        
+    dados = item['dados']
+    link = item['link']
+    texto_adicional = item['texto_adicional']
+    origem = item['origem']
+    file_id_foto = item['file_id_foto']
+    
+    mensagem_preview = montar_layout_mensagem(dados, link, texto_adicional, origem)
+    
+    await update.message.reply_text(
+        f"🔍 <b>PRÉVIA DA {posicao}ª POSIÇÃO DA FILA:</b>\n"
+        f"----------------------------------------",
+        parse_mode='HTML'
+    )
+    
+    try:
+        if file_id_foto:
+            await update.message.reply_photo(photo=file_id_foto, caption=mensagem_preview, parse_mode='HTML')
+            return
+    except Exception as e:
+        logger.error(f"Erro ao enviar foto na prévia: {e}")
+        
+    await update.message.reply_text(text=mensagem_preview, parse_mode='HTML')
+
+async def listar_comandos_comando(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GRUPO_RASCUNHO_ID:
+        return
+    
+    texto_ajuda = (
+        "📖 <b>GUIA DIDÁTICO E COMPLETO DE COMANDOS</b>\n"
+        "───────────────────────────────\n\n"
+        "📋 <b>Gerenciamento de Fila</b>\n"
+        "• <code>/fila</code> — Lista todas as postagens agendadas em ordem de envio.\n"
+        "• <code>/organizar</code> — Reorganiza a fila em blocos de 3 da mesma categoria.\n"
+        "• <code>/prever [posição]</code> — Exibe como a postagem vai aparecer.\n\n"
+        "✏️ <b>Edição e Ajustes</b>\n"
+        "• <code>/personalizar [pos] [promo] [orig]</code> — Altera os preços.\n"
+        "• <code>/editar [posição]</code> — Troca o link do produto.\n"
+        "• <code>/remover [posição]</code> — Apaga um produto da fila.\n"
+        "• <code>/limparfila</code> — Zera totalmente a fila.\n\n"
+        "📊 <b>Métricas</b>\n"
+        "• <code>/relatorio</code> — Relatório completo de performance.\n"
+        "• <code>/resumo</code> — Resumo express do dia.\n\n"
+        "⚙️ <b>Controle</b>\n"
+        "• <code>/pausar</code> / <code>/retomar</code> — Pausa ou reativa as postagens.\n"
+        "• <code>/destravar</code> — Força a publicação imediata.\n"
+        "• <code>/desbugar</code> — Reseta o timer para enviar agora.\n"
+        "• <code>/logs</code> — Mostra os registros técnicos.\n"
+        "• <code>/cancelar</code> — Cancela operações interativas.\n\n"
+        f"⏰ <b>Intervalo atual:</b> {INTERVALO_POSTAGEM_MINUTOS} minutos entre posts"
+    )
+    await update.message.reply_text(texto_ajuda, parse_mode='HTML')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GRUPO_RASCUNHO_ID or not update.message:
@@ -2443,34 +2106,6 @@ async def receber_preco(update: Update, context: ContextTypes.DEFAULT_TYPE):
         preco_str = f"R$ {preco_promo:.2f}".replace('.', ',')
         orig_str = f" (De: R$ {dados['preco_original']:.2f})".replace('.', ',') if dados.get('preco_original') else ""
         
-        plataforma = identificar_plataforma(link)
-        categoria = identificar_categoria(dados.get('titulo', ''))
-        desconto_perc = 0
-        if dados.get('preco_original') and preco_promo:
-            desconto_perc = round(((dados.get('preco_original') - preco_promo) / dados.get('preco_original')) * 100)
-        
-        try:
-            conn = sqlite3.connect(DB_METRICS_PATH, timeout=30.0)
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO metricas_envio 
-                (data_envio, plataforma, categoria, titulo_produto, preco_desconto, preco_original, desconto_percentual, link_original)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                plataforma,
-                categoria,
-                dados.get('titulo', ''),
-                preco_promo,
-                dados.get('preco_original'),
-                desconto_perc,
-                link
-            ))
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            logger.error(f"Erro ao registrar métrica de envio: {e}")
-        
         await update.message.reply_text(
             f"✅ <b>Item adicionado à fila com sucesso!</b>\n"
             f"📊 <b>Posição na Fila: {posicao_real}º</b> (Horário previsto: {horario})\n"
@@ -2531,7 +2166,7 @@ def main():
     application = Application.builder().token(TOKEN).build()
     
     if application.job_queue:
-        application.job_queue.run_repeating(processador_fila_background, interval=60.0, first=10.0)
+        application.job_queue.run_repeating(processador_fila_background, interval=30.0, first=5.0)
     
     conv_handler = ConversationHandler(
         entry_points=[
@@ -2542,8 +2177,6 @@ def main():
             CommandHandler('organizar', organizar_comando),
             CommandHandler('relatorio', relatorio_completo_comando),
             CommandHandler('relatorio_completo', relatorio_completo_comando),
-            CommandHandler('horarios', horarios_comando),
-            CommandHandler('categorias', categorias_comando),
             CommandHandler('refresh', refresh_fila_comando),
             CommandHandler('atualizar', refresh_fila_comando),
             CommandHandler('remover', remover_item_comando),
@@ -2572,33 +2205,13 @@ def main():
     )
     
     application.add_handler(conv_handler)
-    application.add_handler(CommandHandler('comandos', listar_comandos_comando))
-    application.add_handler(CommandHandler('ajuda', listar_comandos_comando))
-    application.add_handler(CommandHandler('fila', ver_fila_comando))
-    application.add_handler(CommandHandler('organizar', organizar_comando))
-    application.add_handler(CommandHandler('relatorio', relatorio_completo_comando))
-    application.add_handler(CommandHandler('relatorio_completo', relatorio_completo_comando))
-    application.add_handler(CommandHandler('horarios', horarios_comando))
-    application.add_handler(CommandHandler('categorias', categorias_comando))
-    application.add_handler(CommandHandler('refresh', refresh_fila_comando))
-    application.add_handler(CommandHandler('atualizar', refresh_fila_comando))
-    application.add_handler(CommandHandler('remover', remover_item_comando))
-    application.add_handler(CommandHandler('limparfila', limpar_fila_comando))
-    application.add_handler(CommandHandler('resumo', resumo_dia_comando))
-    application.add_handler(CommandHandler('destravar', destravar_fila_comando))
-    application.add_handler(CommandHandler('desbugar', desbugar_fila_comando))
-    application.add_handler(CommandHandler('logs', ver_logs_comando))
-    application.add_handler(CommandHandler('editar', iniciar_edicao_comando))
-    application.add_handler(CommandHandler('personalizar', iniciar_personalizar_comando))
-    application.add_handler(CommandHandler('pausar', pausar_bot_comando))
-    application.add_handler(CommandHandler('retomar', retomar_bot_comando))
-    application.add_handler(CommandHandler('prever', prever_item_comando))
     
-    print("🚀 Bot rodando com inteligência de horários, tracking de cliques e AFILIADOS!")
-    print("📊 Dashboard: https://promos-tracking.onrender.com")
-    print("🤝 Links com parâmetros de afiliado sendo adicionados automaticamente!")
+    print("=" * 60)
+    print("🚀 BOT RODANDO COM SUCESSO!")
     print(f"⏰ Intervalo entre postagens: {INTERVALO_POSTAGEM_MINUTOS} minutos")
     print(f"🕐 Último envio registrado: {ULTIMO_ENVIO_TIMESTAMP}")
+    print("📊 Dashboard de métricas: https://promos-tracking.onrender.com")
+    print("=" * 60)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
