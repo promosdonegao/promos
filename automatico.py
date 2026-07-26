@@ -162,6 +162,8 @@ def inicializar_banco():
             status TEXT DEFAULT 'pendente'
         )
     ''')
+    
+    # CORREÇÃO: Adiciona a coluna short_code na tabela historico_links se não existir
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS historico_links (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -173,6 +175,15 @@ def inicializar_banco():
             titulo TEXT
         )
     ''')
+    
+    # Verifica se a coluna short_code existe, se não, adiciona
+    cursor.execute("PRAGMA table_info(historico_links)")
+    colunas = [col[1] for col in cursor.fetchall()]
+    if 'short_code' not in colunas:
+        logger.info("Adicionando coluna 'short_code' na tabela historico_links...")
+        cursor.execute("ALTER TABLE historico_links ADD COLUMN short_code TEXT")
+        conn.commit()
+    
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS contadores_plataforma (
             plataforma TEXT PRIMARY KEY,
@@ -226,19 +237,19 @@ def inicializar_banco():
     conn.commit()
     
     cursor.execute("PRAGMA table_info(fila_postagens)")
-    colunas = [col[1] for col in cursor.fetchall()]
+    colunas_fila = [col[1] for col in cursor.fetchall()]
     
-    if 'origem' not in colunas:
+    if 'origem' not in colunas_fila:
         logger.info("Adicionando coluna 'origem' na tabela fila_postagens...")
         cursor.execute("ALTER TABLE fila_postagens ADD COLUMN origem TEXT DEFAULT 'manual'")
         conn.commit()
         
-    if 'file_id_foto' not in colunas:
+    if 'file_id_foto' not in colunas_fila:
         logger.info("Adicionando coluna 'file_id_foto' na tabela fila_postagens...")
         cursor.execute("ALTER TABLE fila_postagens ADD COLUMN file_id_foto TEXT")
         conn.commit()
     
-    if 'status' not in colunas:
+    if 'status' not in colunas_fila:
         logger.info("Adicionando coluna 'status' na tabela fila_postagens...")
         cursor.execute("ALTER TABLE fila_postagens ADD COLUMN status TEXT DEFAULT 'pendente'")
         conn.commit()
@@ -462,8 +473,18 @@ def registrar_envio_historico(link, short_code=None, categoria=None, titulo=None
     
     conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO historico_links (link_limpo, data_envio, short_code, categoria, plataforma, titulo) VALUES (?, ?, ?, ?, ?, ?)',
-                   (link_limpo, hoje, short_code, categoria, plataforma, titulo))
+    
+    # CORREÇÃO: Verifica se a coluna short_code existe antes de inserir
+    cursor.execute("PRAGMA table_info(historico_links)")
+    colunas = [col[1] for col in cursor.fetchall()]
+    
+    if 'short_code' in colunas:
+        cursor.execute('INSERT INTO historico_links (link_limpo, data_envio, short_code, categoria, plataforma, titulo) VALUES (?, ?, ?, ?, ?, ?)',
+                       (link_limpo, hoje, short_code, categoria, plataforma, titulo))
+    else:
+        cursor.execute('INSERT INTO historico_links (link_limpo, data_envio, categoria, plataforma, titulo) VALUES (?, ?, ?, ?, ?)',
+                       (link_limpo, hoje, categoria, plataforma, titulo))
+    
     conn.commit()
     conn.close()
     
@@ -502,6 +523,42 @@ def adicionar_fila(dados, link, texto_adicional, origem='manual', file_id_foto=N
 
     registrar_log_sistema("adicionar_fila", f"Novo item ID {novo_id} adicionado. Origem: {origem}")
     return total_fila, duplicado, novo_id
+
+def obter_proximo_item_sem_remover():
+    """Pega o próximo item da fila sem removê-lo (apenas leitura)"""
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT id, dados_json, link, texto_adicional, origem, file_id_foto 
+        FROM fila_postagens 
+        WHERE status = 'pendente' 
+        ORDER BY id ASC 
+        LIMIT 1
+    ''')
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        return None
+    
+    return {
+        'db_id': row[0],
+        'dados': json.loads(row[1]),
+        'link': row[2],
+        'texto_adicional': row[3],
+        'origem': row[4],
+        'file_id_foto': row[5]
+    }
+
+def marcar_item_como_enviado(db_id):
+    """Marca um item como enviado (remove da fila)"""
+    conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM fila_postagens WHERE id = ? AND status = ?', (db_id, 'pendente'))
+    conn.commit()
+    conn.close()
+    registrar_log_sistema("marcar_enviado", f"Item ID {db_id} marcado como enviado e removido da fila.")
 
 def proximo_da_fila():
     """Pega o próximo item da fila e remove da fila de pendentes"""
@@ -1379,6 +1436,13 @@ def montar_layout_mensagem(dados, link, texto_adicional, origem='manual'):
 async def enviar_para_grupo_promos(context, dados, link, texto_adicional="", origem='manual', file_id_foto=None):
     global ULTIMO_ENVIO_TIMESTAMP
     mensagem = montar_layout_mensagem(dados, link, texto_adicional, origem)
+    
+    # Extrai o short_code para registrar no histórico
+    short_code = None
+    match = re.search(r'https?://promos-tracking\.onrender\.com/([a-zA-Z0-9]+)', mensagem)
+    if match:
+        short_code = match.group(1)
+    
     try:
         if file_id_foto:
             try:
@@ -1404,7 +1468,14 @@ async def enviar_para_grupo_promos(context, dados, link, texto_adicional="", ori
                 disable_web_page_preview=False
             )
         
-        registrar_envio_historico(link, short_code=None, categoria=identificar_categoria(dados.get('titulo', '')), titulo=dados.get('titulo', ''))
+        # CORREÇÃO: Registra no histórico com o short_code extraído
+        registrar_envio_historico(
+            link, 
+            short_code=short_code, 
+            categoria=identificar_categoria(dados.get('titulo', '')), 
+            titulo=dados.get('titulo', '')
+        )
+        
         # CORREÇÃO: O timestamp é atualizado APÓS o envio bem-sucedido
         ULTIMO_ENVIO_TIMESTAMP = datetime.datetime.now()
         salvar_ultimo_timestamp(ULTIMO_ENVIO_TIMESTAMP)
@@ -1420,6 +1491,7 @@ async def processador_fila_background(context: ContextTypes.DEFAULT_TYPE):
     if BOT_PAUSADO:
         return
 
+    # Verifica o intervalo de 8 minutos
     agora = datetime.datetime.now()
     intervalo_segundos = INTERVALO_POSTAGEM_MINUTOS * 60
     tempo_desde_ultimo = (agora - ULTIMO_ENVIO_TIMESTAMP).total_seconds()
@@ -1427,32 +1499,35 @@ async def processador_fila_background(context: ContextTypes.DEFAULT_TYPE):
     if tempo_desde_ultimo < intervalo_segundos:
         return
 
+    # Verifica se há itens na fila
     total_fila = contar_fila_atual()
     if total_fila == 0:
         return
 
-    item = proximo_da_fila()
-    if item:
-        dados = item['dados']
-        link = item['link']
-        texto_adicional = item['texto_adicional']
-        origem = item['origem']
-        file_id_foto = item['file_id_foto']
-        
-        sucesso = await enviar_para_grupo_promos(context, dados, link, texto_adicional, origem, file_id_foto)
-        if sucesso:
-            # O timestamp já é atualizado dentro de enviar_para_grupo_promos
-            logger.info(f"✅ Postagem enviada com sucesso! Próxima em {INTERVALO_POSTAGEM_MINUTOS} minutos.")
-        else:
-            conn = sqlite3.connect(DB_PROMOS_PATH, timeout=30.0)
-            cursor = conn.cursor()
-            cursor.execute(
-                'INSERT INTO fila_postagens (dados_json, link, texto_adicional, origem, file_id_foto, status) VALUES (?, ?, ?, ?, ?, ?)',
-                (json.dumps(dados), link, texto_adicional, origem, file_id_foto, 'pendente')
-            )
-            conn.commit()
-            conn.close()
-            logger.warning("⚠️ Falha no envio, item retornado à fila.")
+    # Obtém o próximo item SEM REMOVER (apenas leitura)
+    item = obter_proximo_item_sem_remover()
+    if not item:
+        return
+    
+    dados = item['dados']
+    link = item['link']
+    texto_adicional = item['texto_adicional']
+    origem = item['origem']
+    file_id_foto = item['file_id_foto']
+    db_id = item['db_id']
+    
+    # Tenta enviar
+    sucesso = await enviar_para_grupo_promos(context, dados, link, texto_adicional, origem, file_id_foto)
+    
+    if sucesso:
+        # SÓ REMOVE DA FILA SE O ENVIO FOI BEM-SUCEDIDO
+        marcar_item_como_enviado(db_id)
+        logger.info(f"✅ Postagem enviada com sucesso! Próxima em {INTERVALO_POSTAGEM_MINUTOS} minutos.")
+    else:
+        # Em caso de falha, mantém o item na fila e NÃO atualiza o timestamp
+        # Isso faz o bot tentar novamente no próximo ciclo
+        logger.warning(f"⚠️ Falha no envio do item ID {db_id}, mantido na fila para nova tentativa.")
+        # Não atualiza o timestamp para não consumir o intervalo
 
 def calcular_horario_publicacao(ordem_na_data):
     agora = datetime.datetime.now()
